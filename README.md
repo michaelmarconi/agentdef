@@ -110,6 +110,28 @@ extends: https://github.com/your-org/base-agent.git
 
 `agentdef install` clones each ancestor one level deeper under `.agentdef/parent` (a regenerable cache; `agentdef init` adds it to `.gitignore`, and migrates a repo off the old `.gitagent/` name by untracking and deleting it, so existing projects just re-run `agentdef init` and commit). On generation, nearer wins: `SOUL.md` is taken from the closest ancestor that defines one (local over parent over grandparent), `RULES.md` is the union (furthest ancestor first, local last), and skills merge with the nearest definition winning on name collision, so a local skill still overrides every inherited one.
 
+### Trimming what a consumer fetches (`include`)
+
+By default, cloning a parent brings its **entire repository** into `.agentdef/parent` — every directory, not just `skills/`/`agents/`. That's usually fine, but a parent that also keeps its own docs, tests, or other internal-only material alongside the agent definition may not want that material landing in every consumer's cache.
+
+A parent opts into a leaner fetch by adding `include:` to its own `agent.yaml`:
+
+```yaml
+# the PARENT's agent.yaml (the repo being extended, not the consumer's)
+name: my-base-agent
+description: ...
+include:
+  - tools/my-cli   # ship this extra directory to consumers too
+```
+
+- **No `include` key** (the default): nothing changes — a full clone, exactly as before.
+- **`include: [<paths>]`**: consumers fetch only agentdef's own essentials (`skills/`, `agents/`) plus the listed paths. This is a real fetch-level filter (git partial clone + sparse-checkout), not just a hidden working tree — unlisted directories are never downloaded, not merely excluded from view.
+- **`include: []`** (present but empty): consumers fetch essentials only — useful for a parent that wants the leanest possible cache and has nothing extra to ship.
+
+Root files (`agent.yaml`, `SOUL.md`, `RULES.md`) always land regardless of `include`, and `skills/`/`agents/` are always included since agentdef itself reads and merges them — `include` can only add extra paths, not remove those.
+
+Requires git 2.27+ (partial clone / sparse-checkout). agentdef always clones git `extends` sources with `--filter=blob:none --sparse`, so this requirement applies to *every* git-based parent, not only those that declare `include:` — a parent with no `include:` key still clones partially, then runs `sparse-checkout disable` to materialize the full tree. Fetch filtering needs a remote that supports it (true by default on GitHub, GitLab, and Bitbucket); remotes that don't simply degrade to a full fetch. Local (filesystem-path) parents are plain copies and are unaffected.
+
 ## Format-drift watcher
 
 Tools occasionally change their config format. `agentdef watch` fingerprints each tool's published format and compares it to a stored baseline. Deterministic, no LLM, no API key. It exits non-zero when something changes, so CI can open an issue and a human can update the affected adapter. See [`.github/workflows/format-watch.yml`](.github/workflows/format-watch.yml).
