@@ -14,11 +14,18 @@ function isGitSource(source: string): boolean {
 }
 
 function cloneGitRepo(source: string, targetDir: string, version?: string): void {
-  const args = ['clone', '--depth', '1'];
+  const args = ['clone', '--depth', '1', '--filter=blob:none', '--sparse'];
   if (version) args.push('--branch', version.replace('^', ''));
   args.push(source, targetDir);
   mkdirSync(join(targetDir, '..'), { recursive: true });
   execFileSync('git', args, { stdio: 'pipe', timeout: 60_000 });
+  // Cone mode (the sparse-checkout default) always materialises top-level files
+  // regardless of this list, so agent.yaml/SOUL.md/RULES.md still land without
+  // being named here — only subdirectories need to be listed explicitly.
+  execFileSync('git', ['-C', targetDir, 'sparse-checkout', 'set', 'skills', 'agents', 'tools/toolbelt'], {
+    stdio: 'pipe',
+    timeout: 60_000,
+  });
 }
 
 export interface InstallResult {

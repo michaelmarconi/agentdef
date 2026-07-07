@@ -10,12 +10,19 @@ function isGitSource(source) {
         source.includes('bitbucket.org'));
 }
 function cloneGitRepo(source, targetDir, version) {
-    const args = ['clone', '--depth', '1'];
+    const args = ['clone', '--depth', '1', '--filter=blob:none', '--sparse'];
     if (version)
         args.push('--branch', version.replace('^', ''));
     args.push(source, targetDir);
     mkdirSync(join(targetDir, '..'), { recursive: true });
     execFileSync('git', args, { stdio: 'pipe', timeout: 60_000 });
+    // Cone mode (the sparse-checkout default) always materialises top-level files
+    // regardless of this list, so agent.yaml/SOUL.md/RULES.md still land without
+    // being named here — only subdirectories need to be listed explicitly.
+    execFileSync('git', ['-C', targetDir, 'sparse-checkout', 'set', 'skills', 'agents', 'tools/toolbelt'], {
+        stdio: 'pipe',
+        timeout: 60_000,
+    });
 }
 // Resolve `extends:` by materializing the parent agent into .agentdef/parent,
 // from a local path or a git URL — then recurse into that parent's own extends,
