@@ -13,6 +13,8 @@ import { watch } from './watch.js';
 import { FORMAT_SOURCES } from './watch-sources.js';
 import { sync, resolveAdapters, writeAdapters, machineAdaptersPath, KNOWN_ADAPTERS, knownAdapters } from './sync.js';
 import { runKnowledgeHook } from './knowledge-hook.js';
+import { removeSessionHook, KNOWLEDGE_HOOK } from './hooks.js';
+import { collectKnowledgeMetadata, knowledgeHookEnabled } from './knowledge.js';
 import { init } from './init.js';
 import { resolve } from 'node:path';
 // Status/logs go to stderr; only generated content goes to stdout. This is the
@@ -199,15 +201,33 @@ async function main() {
         // by design, so it must keep working forever. Never rename it.
         case 'knowledge': {
             const sub = process.argv[3] && !process.argv[3].startsWith('-') ? process.argv[3] : undefined;
-            if (sub !== 'hook') {
-                console.error('usage: agentdef knowledge hook <claude|gemini> [--dir .]');
+            const usage = 'usage: agentdef knowledge <hook|unhook> <claude|gemini> [--dir .]';
+            if (sub !== 'hook' && sub !== 'unhook') {
+                console.error(usage);
                 process.exit(1);
             }
             const tool = process.argv[4] && !process.argv[4].startsWith('-') ? process.argv[4] : undefined;
             if (tool !== 'claude' && tool !== 'gemini') {
-                // Unknown tool means a stale or hand-edited settings entry; a session
-                // start must never break over it, so complain on stderr and exit 0.
+                if (sub === 'unhook') {
+                    // Interactive command, so a bad tool name may fail loudly.
+                    console.error(usage);
+                    process.exit(1);
+                }
+                // hook: an unknown tool means a stale or hand-edited settings entry; a
+                // session start must never break over it, so warn on stderr and exit 0.
                 console.error(`agentdef knowledge hook: unknown tool "${tool ?? '(none)'}" (expected claude or gemini)`);
+                break;
+            }
+            if (sub === 'unhook') {
+                const agentDir = resolve(dir);
+                const target = KNOWLEDGE_HOOK[tool === 'claude' ? 'claude-code' : 'gemini'];
+                const r = removeSessionHook(agentDir, target);
+                for (const warning of r.warnings)
+                    console.error(warning);
+                console.error(r.changed ? `removed the knowledge hook from ${target.settingsFile}` : `no knowledge hook registered in ${target.settingsFile}`);
+                if (r.changed && knowledgeHookEnabled(agentDir) && collectKnowledgeMetadata(agentDir).entries.length > 0) {
+                    console.error('note: knowledge exists and hooks are enabled, so the next sync re-registers it. Set knowledge: { hook: false } in agent.yaml to keep it off (the instruction file then carries the full index).');
+                }
                 break;
             }
             const out = runKnowledgeHook(dir, tool);

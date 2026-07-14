@@ -5,7 +5,9 @@ import { collectSkillMetadata } from '../skills.js';
 import {
   collectKnowledgeMetadataStrict,
   knowledgeDirName,
+  knowledgeHookEnabled,
   renderKnowledgeBreadcrumb,
+  renderKnowledgeIndex,
 } from '../knowledge.js';
 
 // Emits CLAUDE.md: identity + SOUL + RULES + a skills index (metadata plus a
@@ -46,7 +48,11 @@ export function exportToClaudeCode(dir: string): string {
 
   const knowledge = collectKnowledgeMetadataStrict(agentDir);
   if (knowledge.length > 0) {
-    parts.push(renderKnowledgeBreadcrumb(knowledgeDirName(agentDir), '.claude/settings.json'));
+    parts.push(
+      knowledgeHookEnabled(agentDir)
+        ? renderKnowledgeBreadcrumb(knowledgeDirName(agentDir), '.claude/settings.json')
+        : renderKnowledgeIndex(knowledge, { agentDir }),
+    );
   }
 
   if (manifest.model?.preferred) {

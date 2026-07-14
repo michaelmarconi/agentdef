@@ -9,3 +9,4 @@ export interface EnsureHookResult {
     warnings: string[];
 }
 export declare function ensureSessionHook(agentDir: string, target: KnowledgeHookTarget): EnsureHookResult;
+export declare function removeSessionHook(agentDir: string, target: KnowledgeHookTarget): EnsureHookResult;

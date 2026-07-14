@@ -2,7 +2,7 @@ import { join, resolve } from 'node:path';
 import { loadAgentManifest, loadFileIfExists } from './loader.js';
 import { resolveIdentity } from './merge.js';
 import { collectSkillMetadata } from './skills.js';
-import { collectKnowledgeMetadataStrict, knowledgeDirName, renderKnowledgeIndex, renderKnowledgeBreadcrumb, } from './knowledge.js';
+import { collectKnowledgeMetadataStrict, knowledgeDirName, knowledgeHookEnabled, renderKnowledgeIndex, renderKnowledgeBreadcrumb, } from './knowledge.js';
 export function buildInstructionDoc(dir, opts = {}) {
     const agentDir = resolve(dir);
     const manifest = loadAgentManifest(agentDir);
@@ -41,7 +41,7 @@ export function buildInstructionDoc(dir, opts = {}) {
     }
     const knowledge = collectKnowledgeMetadataStrict(agentDir);
     if (knowledge.length > 0) {
-        parts.push(opts.knowledgeBreadcrumb
+        parts.push(opts.knowledgeBreadcrumb && knowledgeHookEnabled(agentDir)
             ? renderKnowledgeBreadcrumb(knowledgeDirName(agentDir), opts.knowledgeBreadcrumb)
             : renderKnowledgeIndex(knowledge, { agentDir }));
         parts.push('');

@@ -74,6 +74,21 @@ describe('knowledge in instruction docs', () => {
     assert.ok(rule!.content.includes('### Orders (Table)'));
   });
 
+  test('knowledge: { hook: false } switches hook-mode docs to the full static index', () => {
+    const root = fixture({
+      ...BASE,
+      ...KNOWLEDGE,
+      'agent.yaml': `${BASE['agent.yaml']}knowledge:\n  hook: false\n`,
+    });
+    const claude = exportToClaudeCode(root);
+    assert.ok(claude.includes('### Orders (Table)'));
+    assert.ok(claude.includes('Full document: `knowledge/orders.md`'));
+    assert.ok(!claude.includes('.claude/settings.json'));
+    const gemini = exportToGemini(root);
+    assert.ok(gemini.includes('Full document: `knowledge/orders.md`'));
+    assert.ok(!gemini.includes('.gemini/settings.json'));
+  });
+
   test('a broken knowledge doc fails a direct export loudly (skills parity)', () => {
     const root = fixture({ ...BASE, 'knowledge/broken.md': 'no frontmatter' });
     assert.throws(() => buildInstructionDoc(root), /broken\.md/);

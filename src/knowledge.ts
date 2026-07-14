@@ -28,6 +28,17 @@ export function knowledgeDirName(levelDir: string): string {
   return typeof dir === 'string' && dir.trim() !== '' ? dir : DEFAULT_KNOWLEDGE_DIR;
 }
 
+// Whether the hook-mode adapters (claude-code, gemini) deliver the index via a
+// SessionStart hook. `knowledge: { hook: false }` opts out: sync stops
+// registering (and never re-registers after `agentdef knowledge unhook`), and
+// CLAUDE.md/GEMINI.md carry the full static index instead of a breadcrumb.
+// Local manifest only: the consuming repo decides its own delivery mechanism,
+// a parent cannot force hooks onto children.
+export function knowledgeHookEnabled(agentDir: string): boolean {
+  if (!existsSync(join(agentDir, 'agent.yaml'))) return true;
+  return loadAgentManifest(agentDir)?.knowledge?.hook !== false;
+}
+
 // OKF frontmatter only; bodies stay untouched so bundles remain OKF-portable.
 export function loadKnowledgeMetadata(filePath: string, rootDir: string): KnowledgeMetadata {
   const content = readFileSync(filePath, 'utf-8');

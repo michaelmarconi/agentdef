@@ -5,6 +5,7 @@ import { collectSkillMetadata } from './skills.js';
 import {
   collectKnowledgeMetadataStrict,
   knowledgeDirName,
+  knowledgeHookEnabled,
   renderKnowledgeIndex,
   renderKnowledgeBreadcrumb,
 } from './knowledge.js';
@@ -68,7 +69,7 @@ export function buildInstructionDoc(dir: string, opts: DocOptions = {}): string 
   const knowledge = collectKnowledgeMetadataStrict(agentDir);
   if (knowledge.length > 0) {
     parts.push(
-      opts.knowledgeBreadcrumb
+      opts.knowledgeBreadcrumb && knowledgeHookEnabled(agentDir)
         ? renderKnowledgeBreadcrumb(knowledgeDirName(agentDir), opts.knowledgeBreadcrumb)
         : renderKnowledgeIndex(knowledge, { agentDir }),
     );

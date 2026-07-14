@@ -56,7 +56,7 @@ function removeLegacyCache(cwd) {
 function sourceGuard(knowledgeDir) {
     return `for f in $changed; do
   case "$f" in
-    SOUL.md|RULES.md|agent.yaml|skills/*|agents/*|${knowledgeDir}/*) exec agentdef sync ;;
+    SOUL.md|RULES.md|DUTIES.md|agent.yaml|skills/*|agents/*|memory/*|${knowledgeDir}/*) exec agentdef sync ;;
   esac
 done`;
 }

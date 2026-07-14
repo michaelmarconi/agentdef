@@ -2,7 +2,7 @@ import { join, resolve } from 'node:path';
 import { loadAgentManifest, loadFileIfExists } from '../loader.js';
 import { resolveIdentity } from '../merge.js';
 import { collectSkillMetadata } from '../skills.js';
-import { collectKnowledgeMetadataStrict, knowledgeDirName, renderKnowledgeBreadcrumb, } from '../knowledge.js';
+import { collectKnowledgeMetadataStrict, knowledgeDirName, knowledgeHookEnabled, renderKnowledgeBreadcrumb, renderKnowledgeIndex, } from '../knowledge.js';
 // Emits CLAUDE.md: identity + SOUL + RULES + a skills index (metadata plus a
 // pointer to each SKILL.md, since Claude Code loads skills on demand) + a
 // knowledge breadcrumb (claude-code is a hook-mode adapter: the OKF knowledge
@@ -40,7 +40,9 @@ export function exportToClaudeCode(dir) {
     }
     const knowledge = collectKnowledgeMetadataStrict(agentDir);
     if (knowledge.length > 0) {
-        parts.push(renderKnowledgeBreadcrumb(knowledgeDirName(agentDir), '.claude/settings.json'));
+        parts.push(knowledgeHookEnabled(agentDir)
+            ? renderKnowledgeBreadcrumb(knowledgeDirName(agentDir), '.claude/settings.json')
+            : renderKnowledgeIndex(knowledge, { agentDir }));
     }
     if (manifest.model?.preferred) {
         parts.push(`<!-- Model: ${manifest.model.preferred} -->`);

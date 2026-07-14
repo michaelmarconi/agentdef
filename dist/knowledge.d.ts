@@ -1,6 +1,7 @@
 import type { KnowledgeMetadata } from './types.js';
 export declare const DEFAULT_KNOWLEDGE_DIR = "knowledge";
 export declare function knowledgeDirName(levelDir: string): string;
+export declare function knowledgeHookEnabled(agentDir: string): boolean;
 export declare function loadKnowledgeMetadata(filePath: string, rootDir: string): KnowledgeMetadata;
 export interface KnowledgeCollection {
     entries: KnowledgeMetadata[];

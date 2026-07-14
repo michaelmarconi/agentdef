@@ -8,7 +8,7 @@ import { exportToAgentsMd } from './adapters/agents-md.js';
 import { exportToGemini } from './adapters/gemini.js';
 import { exportToCursorFiles } from './adapters/cursor.js';
 import { mirrorSkillDirs, mirrorAgentFiles } from './mirror.js';
-import { collectKnowledgeMetadata } from './knowledge.js';
+import { collectKnowledgeMetadata, knowledgeHookEnabled } from './knowledge.js';
 import { ensureSessionHook, KNOWLEDGE_HOOK } from './hooks.js';
 import { LEGACY_AGENTDEF_DIR } from './paths.js';
 // Where each tool reads its skills / sub-agents from.
@@ -209,10 +209,11 @@ export function sync(dir, opts = {}) {
     for (const adapter of adapters) {
         written.push(...generateInstruction(adapter, agentDir));
         // Hook-mode adapters get the SessionStart hook registered — but only once
-        // knowledge actually exists, so repos without it never grow a settings file.
+        // knowledge actually exists (repos without it never grow a settings file)
+        // and unless agent.yaml opts out via knowledge: { hook: false }.
         // Registration is append-only and idempotent; see hooks.ts.
         const hookTarget = KNOWLEDGE_HOOK[adapter];
-        if (hookTarget && knowledge.entries.length > 0) {
+        if (hookTarget && knowledge.entries.length > 0 && knowledgeHookEnabled(agentDir)) {
             const r = ensureSessionHook(agentDir, hookTarget);
             if (r.changed)
                 written.push(hookTarget.settingsFile);

@@ -16,6 +16,7 @@ export interface AgentManifest {
     agents?: Record<string, AgentEntry>;
     knowledge?: {
         dir?: string;
+        hook?: boolean;
     };
 }
 export interface SkillMetadata {

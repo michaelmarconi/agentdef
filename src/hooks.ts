@@ -124,3 +124,72 @@ export function ensureSessionHook(agentDir: string, target: KnowledgeHookTarget)
   writeFileSync(path, next);
   return { changed: true, path, warnings: [] };
 }
+
+// The inverse, for `agentdef knowledge unhook <tool>`: drop every SessionStart
+// command matching the registration invariant, keep everything else, and prune
+// only the containers this leaves empty. Removal here is explicit user intent,
+// so matching entries go even if they were hand-edited. Note the next sync
+// re-registers while knowledge exists, unless agent.yaml sets
+// knowledge: { hook: false } — the caller prints that hint.
+export function removeSessionHook(agentDir: string, target: KnowledgeHookTarget): EnsureHookResult {
+  const path = join(agentDir, target.settingsFile);
+  const skip = (reason: string): EnsureHookResult => ({
+    changed: false,
+    path,
+    warnings: [
+      `warning: ${target.settingsFile} ${reason} — remove the entry whose command contains "agentdef knowledge hook" manually`,
+    ],
+  });
+
+  if (!existsSync(path)) return { changed: false, path, warnings: [] };
+  const original = readFileSync(path, 'utf-8');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(original);
+  } catch {
+    return skip('is not parseable JSON');
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return skip('is not a JSON object');
+  }
+  const root = parsed as Record<string, unknown>;
+  const hooks = root.hooks;
+  if (hooks === undefined) return { changed: false, path, warnings: [] };
+  if (hooks === null || typeof hooks !== 'object' || Array.isArray(hooks)) {
+    return skip('has a "hooks" value that is not an object');
+  }
+  const hooksObj = hooks as Record<string, unknown>;
+  const sessionStart = hooksObj.SessionStart;
+  if (sessionStart === undefined) return { changed: false, path, warnings: [] };
+  if (!Array.isArray(sessionStart)) {
+    return skip('has a "hooks.SessionStart" value that is not an array');
+  }
+
+  let removed = false;
+  const kept: unknown[] = [];
+  for (const matcherEntry of sessionStart) {
+    const entry = matcherEntry as Record<string, unknown> | null;
+    const inner = entry?.hooks;
+    if (Array.isArray(inner)) {
+      const keptInner = inner.filter((hook) => {
+        const command = (hook as Record<string, unknown> | null)?.command;
+        return !(typeof command === 'string' && REGISTERED_RE.test(command));
+      });
+      if (keptInner.length !== inner.length) {
+        removed = true;
+        if (keptInner.length === 0) continue; // matcher entry existed only for us
+        kept.push({ ...entry, hooks: keptInner });
+        continue;
+      }
+    }
+    kept.push(matcherEntry);
+  }
+  if (!removed) return { changed: false, path, warnings: [] };
+
+  if (kept.length > 0) hooksObj.SessionStart = kept;
+  else delete hooksObj.SessionStart;
+  if (Object.keys(hooksObj).length === 0) delete root.hooks;
+
+  writeFileSync(path, `${JSON.stringify(root, null, 2)}\n`);
+  return { changed: true, path, warnings: [] };
+}

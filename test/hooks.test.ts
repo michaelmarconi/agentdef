@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureSessionHook, KNOWLEDGE_HOOK } from '../src/hooks.js';
+import { ensureSessionHook, removeSessionHook, KNOWLEDGE_HOOK } from '../src/hooks.js';
 
 const dirs: string[] = [];
 function fixture(): string {
@@ -97,6 +97,66 @@ describe('ensureSessionHook', () => {
     assert.deepEqual(JSON.parse(readFileSync(join(root, '.gemini/settings.json'), 'utf-8')), {
       hooks: { SessionStart: 'nope' },
     });
+  });
+
+  test('removeSessionHook drops only the agentdef entry and prunes what it emptied', () => {
+    const root = fixture();
+    mkdirSync(join(root, '.claude'), { recursive: true });
+    writeFileSync(
+      join(root, '.claude/settings.json'),
+      JSON.stringify({
+        permissions: { allow: ['Bash(npm test)'] },
+        hooks: {
+          SessionStart: [
+            { matcher: 'startup', hooks: [{ type: 'command', command: 'echo mine' }] },
+            // hand-edited agentdef entry: explicit unhook still removes it
+            { matcher: 'resume', hooks: [{ type: 'command', command: 'ad knowledge hook claude' }] },
+          ],
+          PreToolUse: [{ hooks: [{ type: 'command', command: 'echo untouched' }] }],
+        },
+      }),
+    );
+    const r = removeSessionHook(root, CLAUDE);
+    assert.equal(r.changed, true);
+    const settings = JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf-8'));
+    assert.deepEqual(settings.permissions, { allow: ['Bash(npm test)'] });
+    assert.equal(settings.hooks.SessionStart.length, 1);
+    assert.equal(settings.hooks.SessionStart[0].hooks[0].command, 'echo mine');
+    assert.equal(settings.hooks.PreToolUse[0].hooks[0].command, 'echo untouched');
+  });
+
+  test('removeSessionHook after ensureSessionHook restores an entry-free SessionStart', () => {
+    const root = fixture();
+    ensureSessionHook(root, CLAUDE);
+    const r = removeSessionHook(root, CLAUDE);
+    assert.equal(r.changed, true);
+    const settings = JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf-8'));
+    assert.equal(settings.hooks, undefined); // emptied containers pruned
+  });
+
+  test('removeSessionHook is a no-op without a file or without our entry', () => {
+    const root = fixture();
+    assert.deepEqual(removeSessionHook(root, CLAUDE), {
+      changed: false,
+      path: join(root, '.claude/settings.json'),
+      warnings: [],
+    });
+    mkdirSync(join(root, '.claude'), { recursive: true });
+    const other = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ command: 'echo x' }] }] } });
+    writeFileSync(join(root, '.claude/settings.json'), other);
+    const r = removeSessionHook(root, CLAUDE);
+    assert.equal(r.changed, false);
+    assert.equal(readFileSync(join(root, '.claude/settings.json'), 'utf-8'), other);
+  });
+
+  test('removeSessionHook warns and leaves invalid JSON untouched', () => {
+    const root = fixture();
+    mkdirSync(join(root, '.claude'), { recursive: true });
+    writeFileSync(join(root, '.claude/settings.json'), '{ not json');
+    const r = removeSessionHook(root, CLAUDE);
+    assert.equal(r.changed, false);
+    assert.match(r.warnings[0], /not parseable JSON/);
+    assert.equal(readFileSync(join(root, '.claude/settings.json'), 'utf-8'), '{ not json');
   });
 
   test('gemini command guard emits a valid empty envelope by itself', () => {

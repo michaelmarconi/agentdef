@@ -21,6 +21,7 @@ export interface AgentManifest {
   agents?: Record<string, AgentEntry>;
   knowledge?: {
     dir?: string;
+    hook?: boolean; // false: no SessionStart hooks, hook-mode tools get the static index
   };
 }
 

@@ -85,7 +85,7 @@ Per the OKF spec, only `type` is required (a missing one fails `validate`/`sync`
 
 Unlike skills, knowledge is **indexed, never mirrored**: each tool gets a compact index (type, title, description, pointer) and loads the full document on demand from its real path. Inherited docs (via `extends`) point into the regenerated `.agentdef/` cache; on a path collision the nearest definition wins, like skills. How the index reaches each tool:
 
-- **`claude-code`, `gemini` (hook mode):** `sync` registers a SessionStart hook in `.claude/settings.json` / `.gemini/settings.json` (append-only and idempotent, your other settings are untouched; if the file is not plain JSON, sync warns with a snippet to merge manually). The hook runs `agentdef knowledge hook <tool>`, which renders the index live at every session start, so local edits and pulled parent changes surface without a re-sync. The instruction file carries a breadcrumb instead of the index. On machines without agentdef the hook is a silent no-op. To remove it, delete the entry containing `agentdef knowledge hook` from the settings file (a stale entry is harmless).
+- **`claude-code`, `gemini` (hook mode):** `sync` registers a SessionStart hook in `.claude/settings.json` / `.gemini/settings.json` (append-only and idempotent, your other settings are untouched; if the file is not plain JSON, sync warns with a snippet to merge manually). The hook runs `agentdef knowledge hook <tool>`, which renders the index live at every session start, so local edits and pulled parent changes surface without a re-sync. The instruction file carries a breadcrumb instead of the index. On machines without agentdef the hook is a silent no-op. To opt out of hook mode, set `knowledge: { hook: false }` in `agent.yaml` (the instruction files then carry the full static index) and run `agentdef knowledge unhook <claude|gemini>` to remove an already registered entry; a stale entry left behind after deleting `knowledge/` is harmless.
 - **Everyone else (static mode):** the full `## Knowledge` section lands in the instruction file (`AGENTS.md`, `.github/copilot-instructions.md`) or, for Cursor, in an always-applied `.cursor/rules/knowledge-index.mdc`; refreshed on every sync, and the git hooks re-sync when a pull touches `knowledge/`.
 
 A repo without `knowledge/` behaves exactly as before: no section, no hook, no settings file.
@@ -108,6 +108,7 @@ agentdef install      # resolve the full `extends:` chain into .agentdef/parent
 agentdef validate     # check the definition (fail-loud); enforces provider:model
 agentdef watch        # detect upstream format drift
 agentdef knowledge hook <claude|gemini>     # print the live knowledge index (used by the SessionStart hooks)
+agentdef knowledge unhook <claude|gemini>   # remove the registered SessionStart hook again
 ```
 
 Status goes to stderr and only generated content to stdout, so `agentdef export -f claude-code > CLAUDE.md` is clean.
