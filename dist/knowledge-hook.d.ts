@@ -1,3 +1,4 @@
+export declare const INDEX_FILE = "knowledge-index.md";
 export type HookTool = 'claude' | 'gemini';
 export interface HookOutput {
     stdout: string;

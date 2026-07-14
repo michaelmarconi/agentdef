@@ -137,6 +137,38 @@ export function renderKnowledgeIndex(entries, opts) {
     }
     return parts.join('\n').trimEnd();
 }
+// Above this, the hook parks the index on disk and injects a digest instead.
+// Hosts truncate or offload oversized hook stdout, and a truncated index does
+// not degrade, it silently disappears: measured on one host, 11 of 108 entries
+// arrived and the sort order decided which. The limits are undocumented and
+// differ per host, so 8k is a conservative floor, not a measurement — too low
+// costs one Read, too high costs the corpus.
+export const INLINE_INDEX_BUDGET = 8_000;
+// Stands in for the index when the corpus outgrows INLINE_INDEX_BUDGET. Must
+// stay small at any corpus size — a digest that is itself offloaded would fail
+// exactly like the index it replaces.
+export function renderKnowledgeDigest(entries, opts) {
+    const counts = new Map();
+    for (const doc of entries)
+        counts.set(doc.type, (counts.get(doc.type) ?? 0) + 1);
+    // Biggest group first, ties alphabetical: deterministic across machines, and
+    // the head of the line is the part worth reading.
+    const shape = [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+        .map(([type, n]) => `${type} (${n})`)
+        .join(' · ');
+    return [
+        '## Knowledge',
+        '',
+        `${entries.length} documents are indexed for this agent: ${shape}.`,
+        '',
+        `The index — title, type and a one-line description per document, with a path to each —`,
+        `is at \`${opts.indexPath}\`. It is rewritten at every session start.`,
+        '',
+        `Read it before assuming something is not written down, then open the documents it points to.`,
+        `It is too large to inject here without being truncated, so this digest stands in for it.`,
+    ].join('\n');
+}
 // For hook-mode instruction files (CLAUDE.md, GEMINI.md): the full index is
 // injected fresh at session start, so the file itself only carries a pointer —
 // humans reading it still learn the corpus exists, and an agent whose hook

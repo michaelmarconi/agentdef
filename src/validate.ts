@@ -76,13 +76,14 @@ export function validate(dir: string): ValidationIssue[] {
   }
   if (knowledge.entries.length > 0) {
     const size = renderKnowledgeIndex(knowledge.entries, { agentDir }).length;
-    // Headroom warning, never truncation: Claude Code file-offloads injected
-    // context above ~10k chars, Gemini's limit is undocumented. Trim at the
-    // source (shorter descriptions) rather than losing entries silently.
+    // The hook digests its way past INLINE_INDEX_BUDGET, but the static
+    // consumers cannot: cursor rules and `knowledge: { hook: false }` embed the
+    // index in an instruction file that loads in full, every turn. A running
+    // cost, not a cliff, hence a warning.
     if (size > 20_000) {
       issues.push({
         level: 'warning',
-        message: `knowledge index is ${size} chars — consider shorter descriptions (large injected context degrades hook-mode tools)`,
+        message: `knowledge index is ${size} chars — the session-start hook digests it, but static consumers (cursor rules, 'knowledge: { hook: false }') embed it in full; consider shorter descriptions`,
       });
     }
   }

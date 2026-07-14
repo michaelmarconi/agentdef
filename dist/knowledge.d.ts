@@ -12,4 +12,8 @@ export declare function collectKnowledgeMetadataStrict(agentDir: string): Knowle
 export declare function renderKnowledgeIndex(entries: KnowledgeMetadata[], opts: {
     agentDir: string;
 }): string;
+export declare const INLINE_INDEX_BUDGET = 8000;
+export declare function renderKnowledgeDigest(entries: KnowledgeMetadata[], opts: {
+    indexPath: string;
+}): string;
 export declare function renderKnowledgeBreadcrumb(knowledgeDir: string, settingsFile: string): string;

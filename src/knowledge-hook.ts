@@ -1,7 +1,12 @@
-import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { loadAgentManifest } from './loader.js';
-import { collectKnowledgeMetadata, renderKnowledgeIndex } from './knowledge.js';
+import {
+  INLINE_INDEX_BUDGET,
+  collectKnowledgeMetadata,
+  renderKnowledgeDigest,
+  renderKnowledgeIndex,
+} from './knowledge.js';
 import { AGENTDEF_DIR } from './paths.js';
 
 // The implementation behind `agentdef knowledge hook <tool>`: the SessionStart
@@ -17,6 +22,10 @@ import { AGENTDEF_DIR } from './paths.js';
 // reports problems in-band, as a marker appended to the injected context — the
 // one channel guaranteed to reach a human — while validate()/sync remain the
 // fail-loud enforcement point for the same errors.
+
+// Lives under the cache dir because it is exactly that: regenerable, gitignored,
+// rewritten at every session start.
+export const INDEX_FILE = 'knowledge-index.md';
 
 export type HookTool = 'claude' | 'gemini';
 
@@ -47,9 +56,31 @@ function buildPayload(agentDir: string, stderr: string[]): string {
   }
 
   const parts: string[] = [];
-  if (entries.length > 0) parts.push(renderKnowledgeIndex(entries, { agentDir }));
+  if (entries.length > 0) parts.push(renderIndexOrDigest(agentDir, entries, stderr));
   if (markers.length > 0) parts.push(markers.join('\n'));
   return parts.join('\n\n');
+}
+
+// Writing is the only side effect this hook has, and it stays subordinate to
+// injecting something: a failed write falls back to the full index inline, which
+// is what every release before this one did anyway.
+function renderIndexOrDigest(
+  agentDir: string,
+  entries: ReturnType<typeof collectKnowledgeMetadata>['entries'],
+  stderr: string[],
+): string {
+  const index = renderKnowledgeIndex(entries, { agentDir });
+  if (index.length <= INLINE_INDEX_BUDGET) return index;
+
+  const indexPath = join(agentDir, AGENTDEF_DIR, INDEX_FILE);
+  try {
+    mkdirSync(dirname(indexPath), { recursive: true });
+    writeFileSync(indexPath, `${index}\n`);
+  } catch (e) {
+    stderr.push(`agentdef knowledge hook: could not write ${indexPath}: ${(e as Error).message}`);
+    return index;
+  }
+  return renderKnowledgeDigest(entries, { indexPath: join(AGENTDEF_DIR, INDEX_FILE) });
 }
 
 // Always exits cleanly (the caller writes stdout/stderr and exits 0): parseable
