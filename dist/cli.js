@@ -12,6 +12,7 @@ import { validate } from './validate.js';
 import { watch } from './watch.js';
 import { FORMAT_SOURCES } from './watch-sources.js';
 import { sync, resolveAdapters, writeAdapters, machineAdaptersPath, KNOWN_ADAPTERS, knownAdapters } from './sync.js';
+import { runKnowledgeHook } from './knowledge-hook.js';
 import { init } from './init.js';
 import { resolve } from 'node:path';
 // Status/logs go to stderr; only generated content goes to stdout. This is the
@@ -36,8 +37,12 @@ function checkForUpdate() {
     }
 }
 async function main() {
-    checkForUpdate();
     const command = process.argv[2];
+    // `knowledge hook` runs at every session start of the hook-mode tools: skip
+    // the update check there — no spawned background process, zero latency, and
+    // zero risk of anything but the payload reaching the tool.
+    if (command !== 'knowledge')
+        checkForUpdate();
     const dir = getOpt('--dir', '-d') ?? '.';
     switch (command) {
         case 'export': {
@@ -86,8 +91,10 @@ async function main() {
             break;
         }
         case 'install': {
-            const res = install(dir, { force: has('--force') });
+            const res = install(dir, { mode: has('--force') ? 'force' : 'reuse' });
             console.error(res.installed.length ? `installed: ${res.installed.join(', ')}` : 'nothing to install (no extends)');
+            for (const warning of res.warnings)
+                console.error(warning);
             break;
         }
         case 'validate': {
@@ -122,6 +129,7 @@ async function main() {
             const adaptersOpt = getOpt('--adapters');
             const res = sync(dir, {
                 adapters: adaptersOpt ? adaptersOpt.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+                force: has('--force'),
             });
             console.error(`synced for: ${res.adapters.join(', ')}`);
             for (const w of res.written)
@@ -165,7 +173,7 @@ async function main() {
             else if (sub === 'list') {
                 console.error('known adapters (set with: agentdef adapters set <name>...):');
                 for (const a of knownAdapters()) {
-                    console.error(`  ${a.name.padEnd(13)} ${a.instruction.padEnd(34)} ${a.skills}`);
+                    console.error(`  ${a.name.padEnd(13)} ${a.instruction.padEnd(34)} ${a.skills.padEnd(18)} knowledge: ${a.knowledge}`);
                 }
             }
             else if (!sub || sub === 'show') {
@@ -183,6 +191,30 @@ async function main() {
                 console.error('usage: agentdef adapters [list | show | set [--local] <tool>...]');
                 process.exit(1);
             }
+            break;
+        }
+        // The `agentdef knowledge hook <tool>` string is a permanent API contract:
+        // sync bakes it into user settings files (.claude/settings.json,
+        // .gemini/settings.json — see hooks.ts) and stale entries are left in place
+        // by design, so it must keep working forever. Never rename it.
+        case 'knowledge': {
+            const sub = process.argv[3] && !process.argv[3].startsWith('-') ? process.argv[3] : undefined;
+            if (sub !== 'hook') {
+                console.error('usage: agentdef knowledge hook <claude|gemini> [--dir .]');
+                process.exit(1);
+            }
+            const tool = process.argv[4] && !process.argv[4].startsWith('-') ? process.argv[4] : undefined;
+            if (tool !== 'claude' && tool !== 'gemini') {
+                // Unknown tool means a stale or hand-edited settings entry; a session
+                // start must never break over it, so complain on stderr and exit 0.
+                console.error(`agentdef knowledge hook: unknown tool "${tool ?? '(none)'}" (expected claude or gemini)`);
+                break;
+            }
+            const out = runKnowledgeHook(dir, tool);
+            for (const line of out.stderr)
+                console.error(line);
+            if (out.stdout)
+                process.stdout.write(out.stdout);
             break;
         }
         case 'init': {
@@ -214,7 +246,7 @@ async function main() {
             break;
         }
         default:
-            console.error('usage: agentdef <init|sync|adapters|export|install|validate|watch> [--format <claude-code|agents|gemini|cursor>] [--adapters a,b,c] [--dir .] [--out FILE] [--force] [--update]');
+            console.error('usage: agentdef <init|sync|adapters|export|install|validate|watch|knowledge> [--format <claude-code|agents|gemini|cursor>] [--adapters a,b,c] [--dir .] [--out FILE] [--force] [--update]');
             process.exit(1);
     }
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { loadAgentManifest } from './loader.js';
@@ -21,8 +21,45 @@ function cloneGitRepo(source: string, targetDir: string, version?: string): void
   execFileSync('git', args, { stdio: 'pipe', timeout: 60_000 });
 }
 
+function gitOut(args: string[], cwd?: string): string {
+  return execFileSync('git', args, {
+    ...(cwd ? { cwd } : {}),
+    encoding: 'utf-8',
+    stdio: 'pipe',
+    timeout: 15_000,
+  }).trim();
+}
+
+// Clone into a sibling temp dir, verify, then swap. Failure-safe where a plain
+// rm-then-clone is not: a network drop mid-clone leaves the previous
+// materialization intact instead of destroying it.
+function cloneAndSwap(source: string, parentDir: string): void {
+  const tmpDir = `${parentDir}.tmp-${process.pid}`;
+  rmSync(tmpDir, { recursive: true, force: true });
+  try {
+    cloneGitRepo(source, tmpDir);
+    if (!existsSync(join(tmpDir, 'agent.yaml'))) {
+      throw new Error(`extends: parent at ${source} has no agent.yaml, not a valid agent definition`);
+    }
+    rmSync(parentDir, { recursive: true, force: true });
+    renameSync(tmpDir, parentDir);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// How install treats an already-materialized git parent:
+//   reuse   — keep it, only fill in missing deeper ancestors (CLI `install`)
+//   refresh — re-clone only when the remote HEAD moved (sync's default; the
+//             SHA gate keeps routine syncs offline-safe and clone-free)
+//   force   — unconditionally re-clone (`install --force`, `sync --force`)
+// Local-path parents are always re-copied under refresh/force: uncommitted
+// local edits carry no SHA to gate on, and the copy is cheap.
+export type InstallMode = 'reuse' | 'refresh' | 'force';
+
 export interface InstallResult {
   installed: string[];
+  warnings: string[];
 }
 
 // Resolve `extends:` by materializing the parent agent into .agentdef/parent,
@@ -32,13 +69,44 @@ export interface InstallResult {
 // the adapters walk that chain with nearer ancestors winning on collision (see
 // sources.ts and merge.ts), so a local skill still overrides every inherited one.
 // (Dependencies[] are not used by noord; add when a repo needs them.)
-export function install(dir: string, opts: { force?: boolean } = {}): InstallResult {
+export function install(dir: string, opts: { mode?: InstallMode } = {}): InstallResult {
   const installed: string[] = [];
+  const warnings: string[] = [];
   const root = resolve(dir);
   // Seed with the root's own identity so a chain that points back to it (directly
   // or transitively) is caught before any copy, not after a self-copy crash.
-  resolveExtends(root, root, Boolean(opts.force), new Set([root]), installed);
-  return { installed };
+  resolveExtends(root, root, opts.mode ?? 'reuse', new Set([root]), installed, warnings);
+  return { installed, warnings };
+}
+
+// Whether the materialized git parent can be kept as-is under `refresh`: same
+// origin URL (an edited extends: must re-clone) and the remote HEAD unchanged.
+// Network failure keeps the cache with a loud warning rather than aborting:
+// the cache is a previously-validated materialization and sync runs from git
+// hooks on every pull, so it must survive being offline. Real definition errors
+// (bad agent.yaml, cycles, missing parent manifest) still fail loudly below.
+function cachedParentIsCurrent(source: string, parentDir: string, warnings: string[]): boolean {
+  let originUrl: string;
+  let localSha: string;
+  try {
+    originUrl = gitOut(['config', '--get', 'remote.origin.url'], parentDir);
+    localSha = gitOut(['rev-parse', 'HEAD'], parentDir);
+  } catch {
+    return false; // no .git or corrupt cache: re-clone
+  }
+  if (originUrl !== source) return false;
+  let remoteSha: string;
+  try {
+    // The clone never passes a ref (see cloneGitRepo's unused version param), so
+    // HEAD is the one ref to compare. If pinned refs ever land, gate on the ref.
+    remoteSha = gitOut(['ls-remote', source, 'HEAD']).split(/\s+/)[0] ?? '';
+  } catch {
+    warnings.push(
+      `warning: could not check ${source} for updates (offline?) — using cached parent @ ${localSha.slice(0, 7)}`,
+    );
+    return true;
+  }
+  return remoteSha !== '' && remoteSha === localSha;
 }
 
 // One link in the chain: materialize this agent's parent, then recurse into the
@@ -52,9 +120,10 @@ export function install(dir: string, opts: { force?: boolean } = {}): InstallRes
 function resolveExtends(
   agentDir: string,
   sourceDir: string,
-  force: boolean,
+  mode: InstallMode,
   seen: Set<string>,
   installed: string[],
+  warnings: string[],
 ): void {
   const manifest = loadAgentManifest(agentDir);
   if (!manifest.extends) return;
@@ -74,28 +143,34 @@ function resolveExtends(
   const parentSourceDir = isLocal ? localPath : parentDir;
 
   if (existsSync(parentDir)) {
-    if (!force) {
-      // Already materialized by a prior run; resolve its chain so any deeper
-      // ancestor still missing gets filled in, then stop.
-      resolveExtends(parentDir, parentSourceDir, force, seen, installed);
+    const keep =
+      mode === 'reuse' ||
+      (mode === 'refresh' &&
+        !isLocal &&
+        isGitSource(source) &&
+        cachedParentIsCurrent(source, parentDir, warnings));
+    if (keep) {
+      // Already materialized and current enough; resolve its chain so any deeper
+      // ancestor still missing (or stale) gets handled, then stop.
+      resolveExtends(parentDir, parentSourceDir, mode, seen, installed, warnings);
       return;
     }
-    rmSync(parentDir, { recursive: true, force: true });
+    if (isLocal) rmSync(parentDir, { recursive: true, force: true });
   }
 
   if (isLocal) {
     mkdirSync(join(parentDir, '..'), { recursive: true });
     cpSync(localPath, parentDir, { recursive: true });
+    if (!existsSync(join(parentDir, 'agent.yaml'))) {
+      throw new Error(`extends: parent at ${source} has no agent.yaml, not a valid agent definition`);
+    }
   } else if (isGitSource(source)) {
-    cloneGitRepo(source, parentDir);
+    cloneAndSwap(source, parentDir);
   } else {
     throw new Error(`extends: unknown source type "${source}" (expected a local path or git URL)`);
   }
 
-  if (!existsSync(join(parentDir, 'agent.yaml'))) {
-    throw new Error(`extends: parent at ${source} has no agent.yaml, not a valid agent definition`);
-  }
   installed.push(installed.length === 0 ? 'parent' : `parent^${installed.length + 1}`);
 
-  resolveExtends(parentDir, parentSourceDir, force, seen, installed);
+  resolveExtends(parentDir, parentSourceDir, mode, seen, installed, warnings);
 }

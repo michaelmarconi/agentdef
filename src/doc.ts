@@ -2,6 +2,12 @@ import { join, resolve } from 'node:path';
 import { loadAgentManifest, loadFileIfExists } from './loader.js';
 import { resolveIdentity } from './merge.js';
 import { collectSkillMetadata } from './skills.js';
+import {
+  collectKnowledgeMetadataStrict,
+  knowledgeDirName,
+  renderKnowledgeIndex,
+  renderKnowledgeBreadcrumb,
+} from './knowledge.js';
 
 // Shared builder for single-file instruction docs (AGENTS.md, GEMINI.md): one
 // flat document with identity + SOUL + RULES + a skills INDEX (metadata + a
@@ -13,6 +19,10 @@ import { collectSkillMetadata } from './skills.js';
 export interface DocOptions {
   delegation?: boolean;
   memory?: boolean;
+  // Hook-mode tools (currently Gemini) get the knowledge index injected fresh
+  // at session start, so their doc carries only a breadcrumb pointing at this
+  // settings file. Unset means the full static index (the AGENTS.md family).
+  knowledgeBreadcrumb?: string;
 }
 
 export function buildInstructionDoc(dir: string, opts: DocOptions = {}): string {
@@ -53,6 +63,16 @@ export function buildInstructionDoc(dir: string, opts: DocOptions = {}): string 
       parts.push(`Full instructions: \`skills/${skillDirName}/SKILL.md\``);
       parts.push('');
     }
+  }
+
+  const knowledge = collectKnowledgeMetadataStrict(agentDir);
+  if (knowledge.length > 0) {
+    parts.push(
+      opts.knowledgeBreadcrumb
+        ? renderKnowledgeBreadcrumb(knowledgeDirName(agentDir), opts.knowledgeBreadcrumb)
+        : renderKnowledgeIndex(knowledge, { agentDir }),
+    );
+    parts.push('');
   }
 
   if (opts.delegation && manifest.agents && Object.keys(manifest.agents).length > 0) {

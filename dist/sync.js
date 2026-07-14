@@ -8,6 +8,8 @@ import { exportToAgentsMd } from './adapters/agents-md.js';
 import { exportToGemini } from './adapters/gemini.js';
 import { exportToCursorFiles } from './adapters/cursor.js';
 import { mirrorSkillDirs, mirrorAgentFiles } from './mirror.js';
+import { collectKnowledgeMetadata } from './knowledge.js';
+import { ensureSessionHook, KNOWLEDGE_HOOK } from './hooks.js';
 import { LEGACY_AGENTDEF_DIR } from './paths.js';
 // Where each tool reads its skills / sub-agents from.
 const SKILL_DIR = {
@@ -165,6 +167,7 @@ export function knownAdapters() {
         name,
         instruction: INSTRUCTION_FILE[name] ?? '(skills only)',
         skills: SKILL_DIR[name] ? `${SKILL_DIR[name]}/` : '(none)',
+        knowledge: KNOWLEDGE_HOOK[name] ? 'session hook' : 'static index',
     }));
 }
 // The orchestrator: read the adapter list, resolve extends, validate, then for
@@ -183,7 +186,10 @@ export function sync(dir, opts = {}) {
     if (existsSync(join(agentDir, LEGACY_AGENTDEF_DIR))) {
         warnings.push(`warning: legacy ${LEGACY_AGENTDEF_DIR}/ found — run \`agentdef init\` to migrate to .agentdef/`);
     }
-    install(agentDir, { force: true });
+    // refresh: re-clone a git parent only when its remote HEAD moved (SHA gate),
+    // so routine syncs are clone-free and offline-safe. --force re-clones always.
+    const installed = install(agentDir, { mode: opts.force ? 'force' : 'refresh' });
+    warnings.push(...installed.warnings);
     const issues = validate(agentDir);
     const errors = issues.filter((i) => i.level === 'error');
     if (errors.length > 0) {
@@ -195,9 +201,23 @@ export function sync(dir, opts = {}) {
         if (issue.level === 'warning')
             warnings.push(`warning: ${issue.message}`);
     }
+    // Chain-wide, not just local: knowledge can arrive purely via the extends
+    // parent, and only sync sees that. Parse errors are impossible here — validate
+    // above already failed the sync on them.
+    const knowledge = collectKnowledgeMetadata(agentDir);
     const written = [];
     for (const adapter of adapters) {
         written.push(...generateInstruction(adapter, agentDir));
+        // Hook-mode adapters get the SessionStart hook registered — but only once
+        // knowledge actually exists, so repos without it never grow a settings file.
+        // Registration is append-only and idempotent; see hooks.ts.
+        const hookTarget = KNOWLEDGE_HOOK[adapter];
+        if (hookTarget && knowledge.entries.length > 0) {
+            const r = ensureSessionHook(agentDir, hookTarget);
+            if (r.changed)
+                written.push(hookTarget.settingsFile);
+            warnings.push(...r.warnings);
+        }
         const skillDir = SKILL_DIR[adapter];
         if (skillDir) {
             const n = mirrorSkillDirs(agentDir, skillDir);

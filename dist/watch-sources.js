@@ -15,6 +15,12 @@ export const FORMAT_SOURCES = [
         name: 'cursor-rules-docs',
         url: 'https://docs.cursor.com/context/rules.md',
     },
+    // agentdef consumes OKF frontmatter for knowledge/ (see knowledge.ts); a spec
+    // change here means the loader or the emitted index may need updating.
+    {
+        name: 'okf-spec',
+        url: 'https://raw.githubusercontent.com/GoogleCloudPlatform/knowledge-catalog/main/okf/SPEC.md',
+    },
     // Model-lab CLIs read AGENTS.md, but watch their own docs too in case any adds
     // tool-specific behavior on top of the standard.
     {

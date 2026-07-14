@@ -3,6 +3,7 @@ import yaml from 'js-yaml';
 import { loadAgentManifest } from '../loader.js';
 import { resolveIdentity } from '../merge.js';
 import { collectSkills, getAllowedTools } from '../skills.js';
+import { collectKnowledgeMetadataStrict, renderKnowledgeIndex } from '../knowledge.js';
 // Cursor is the one tool needing real translation rather than a single file: it
 // reads .cursor/rules/*.mdc, one always-applied global rule (SOUL + RULES) plus
 // one rule per skill. `sync` writes these files directly; `export` emits them as
@@ -71,6 +72,15 @@ function buildRules(dir) {
     }
     for (const skill of collectSkills(agentDir)) {
         rules.push(buildSkillRule(skill));
+    }
+    // Cursor never reads AGENTS.md, so this rule is its only knowledge surface.
+    // Always applied, but it is the compact index (pointers, not inlined docs).
+    const knowledge = collectKnowledgeMetadataStrict(agentDir);
+    if (knowledge.length > 0) {
+        rules.push({
+            filename: 'knowledge-index.mdc',
+            content: buildMdcFile({ description: 'Knowledge index', alwaysApply: true }, renderKnowledgeIndex(knowledge, { agentDir })),
+        });
     }
     return rules;
 }

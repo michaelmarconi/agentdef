@@ -2,6 +2,7 @@ import { join, resolve } from 'node:path';
 import { loadAgentManifest } from './loader.js';
 import { resolveIdentity } from './merge.js';
 import { loadAllSkills } from './skills.js';
+import { collectKnowledgeMetadata, renderKnowledgeIndex } from './knowledge.js';
 // Model identifiers must be "provider:model" (e.g. anthropic:claude-opus-4-7).
 // This is the exact rule the repurposed upstream package started enforcing, which
 // broke CI; agentdef checks it explicitly.
@@ -54,6 +55,25 @@ export function validate(dir) {
     }
     catch (e) {
         issues.push({ level: 'error', message: `skills: ${e.message}` });
+    }
+    // Chain-wide (sync gates on this): every broken knowledge doc surfaces at
+    // build time, all at once — the session-start hook only degrades with a
+    // marker, so this is where fail-loud lives.
+    const knowledge = collectKnowledgeMetadata(agentDir);
+    for (const error of knowledge.errors) {
+        issues.push({ level: 'error', message: `knowledge: ${error}` });
+    }
+    if (knowledge.entries.length > 0) {
+        const size = renderKnowledgeIndex(knowledge.entries, { agentDir }).length;
+        // Headroom warning, never truncation: Claude Code file-offloads injected
+        // context above ~10k chars, Gemini's limit is undocumented. Trim at the
+        // source (shorter descriptions) rather than losing entries silently.
+        if (size > 20_000) {
+            issues.push({
+                level: 'warning',
+                message: `knowledge index is ${size} chars — consider shorter descriptions (large injected context degrades hook-mode tools)`,
+            });
+        }
     }
     return issues;
 }

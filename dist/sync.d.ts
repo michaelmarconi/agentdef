@@ -18,6 +18,7 @@ export interface AdapterInfo {
     name: string;
     instruction: string;
     skills: string;
+    knowledge: string;
 }
 export declare function knownAdapters(): AdapterInfo[];
 export interface SyncResult {
@@ -27,4 +28,5 @@ export interface SyncResult {
 }
 export declare function sync(dir: string, opts?: {
     adapters?: string[];
+    force?: boolean;
 }): SyncResult;

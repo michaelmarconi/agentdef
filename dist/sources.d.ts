@@ -1,1 +1,1 @@
-export declare function collectSourceRoots(agentDir: string, kind: string): string[];
+export declare function collectSourceRoots(agentDir: string, kind: string | ((levelDir: string) => string)): string[];

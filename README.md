@@ -25,6 +25,7 @@ agent.yaml      name, description, model, extends
 SOUL.md         identity, voice, persona
 RULES.md        constraints and operating rules
 skills/         one folder per skill, each with a SKILL.md
+knowledge/      optional knowledge docs (OKF frontmatter), indexed, never copied
 ```
 
 agentdef generates whatever each tool reads from that single source. No parallel copies to maintain, no drift between tools.
@@ -51,6 +52,8 @@ The instruction file is often shared, AGENTS.md is one standard that codex, open
 
 The same names work with `agentdef export --format <name>` (plus extra AGENTS.md aliases like `kimi`, `grok`, `windsurf`, `zed`, `aider`).
 
+If the repo has a `knowledge/` folder (see [Knowledge](#knowledge)), each adapter also surfaces its index: `claude-code` and `gemini` via a SessionStart hook (always fresh), the AGENTS.md family and `copilot` as a static `## Knowledge` section in their instruction file, and `cursor` as an always-applied `.cursor/rules/knowledge-index.mdc`. `agentdef adapters list` shows which mode each adapter uses.
+
 ## Why only two formats
 
 The AI-coding ecosystem converged on essentially two instruction-file formats: **AGENTS.md** (now a standard read by 30+ tools) and **CLAUDE.md**. Define once, run in any tool, switch freely. Even the model-lab CLIs (Kimi, Grok) and models reached through other harnesses (GLM) read these same files rather than inventing their own. That convergence is why agentdef can stay small and still cover the field.
@@ -63,11 +66,40 @@ You author skills once in `skills/`. Tools never read that folder directly, `age
 
 `.agents/skills/` is the shared standard for the AGENTS.md family; the others are tool-specific. There is no single root skills folder that every tool reads; `skills/` is the source, the `.[tool]/skills/` dirs are generated. Every instruction file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) indexes skills with metadata + a pointer to each `SKILL.md`, rather than inlining them. The tools load each skill on demand from their own skills dir (the Agent Skills standard), so inlining would only duplicate the content and bloat the file.
 
+## Knowledge
+
+A repo can carry an optional `knowledge/` folder: markdown documents in Google's [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) (OKF, Apache-2.0). agentdef reads only the YAML frontmatter, so bundles stay OKF-portable; document bodies can be anything.
+
+```markdown
+---
+type: BigQuery Table        # required; free-form, agentdef never interprets it
+title: Orders               # optional; defaults to the filename
+description: One row per order.
+tags: [sales, revenue]
+timestamp: 2026-05-28T14:30:00Z
+resource: https://console.cloud.google.com/bigquery?t=orders
+---
+```
+
+Per the OKF spec, only `type` is required (a missing one fails `validate`/`sync` loudly); every other field is optional, unknown keys are tolerated, `type` values are yours to choose (dataset, metric, api, runbook, concept, ...). `index.md` and `log.md` are OKF-reserved names and skipped at every level. Folders nest freely; discovery is recursive. Rename the folder with `knowledge: { dir: ... }` in `agent.yaml` (then re-run `agentdef init` so the git hooks watch the new name).
+
+Unlike skills, knowledge is **indexed, never mirrored**: each tool gets a compact index (type, title, description, pointer) and loads the full document on demand from its real path. Inherited docs (via `extends`) point into the regenerated `.agentdef/` cache; on a path collision the nearest definition wins, like skills. How the index reaches each tool:
+
+- **`claude-code`, `gemini` (hook mode):** `sync` registers a SessionStart hook in `.claude/settings.json` / `.gemini/settings.json` (append-only and idempotent, your other settings are untouched; if the file is not plain JSON, sync warns with a snippet to merge manually). The hook runs `agentdef knowledge hook <tool>`, which renders the index live at every session start, so local edits and pulled parent changes surface without a re-sync. The instruction file carries a breadcrumb instead of the index. On machines without agentdef the hook is a silent no-op. To remove it, delete the entry containing `agentdef knowledge hook` from the settings file (a stale entry is harmless).
+- **Everyone else (static mode):** the full `## Knowledge` section lands in the instruction file (`AGENTS.md`, `.github/copilot-instructions.md`) or, for Cursor, in an always-applied `.cursor/rules/knowledge-index.mdc`; refreshed on every sync, and the git hooks re-sync when a pull touches `knowledge/`.
+
+A repo without `knowledge/` behaves exactly as before: no section, no hook, no settings file.
+
+### Keeping child repos fresh
+
+Inherited knowledge refreshes on every sync (a cheap SHA check re-clones a parent only when its HEAD moved). Developers get that on their next pull via the git hooks. If a parent's knowledge must propagate to child repos *immediately*, wire it in CI. This is a pattern, not something agentdef generates: the parent repo runs a workflow on pushes touching `knowledge/**` that notifies each child (`gh api repos/ORG/CHILD/dispatches -f event_type=agentdef-parent-updated`); each child runs a `repository_dispatch` workflow that checks out, runs `agentdef sync`, and commits if changed. Teams without cross-repo tokens simply rely on the pull-time hooks.
+
 ## Commands
 
 ```bash
 agentdef init         # install git hooks + run the first sync (one-time per repo; --no-sync to skip)
 agentdef sync         # generate every adapter in .agent-adapters + mirror skills/agents
+                      # (--force re-clones the extends chain even when unchanged)
 agentdef adapters     # show which tools sync will generate for, and from where
 agentdef adapters list                      # list every known adapter + what it emits
 agentdef adapters set [--local] <tool>...   # set the machine default (or, with --local, this repo)
@@ -75,6 +107,7 @@ agentdef export --format <claude-code|agents|gemini|cursor> [--dir .] [--out FIL
 agentdef install      # resolve the full `extends:` chain into .agentdef/parent
 agentdef validate     # check the definition (fail-loud); enforces provider:model
 agentdef watch        # detect upstream format drift
+agentdef knowledge hook <claude|gemini>     # print the live knowledge index (used by the SessionStart hooks)
 ```
 
 Status goes to stderr and only generated content to stdout, so `agentdef export -f claude-code > CLAUDE.md` is clean.

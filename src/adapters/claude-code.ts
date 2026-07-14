@@ -2,11 +2,18 @@ import { join, resolve } from 'node:path';
 import { loadAgentManifest, loadFileIfExists } from '../loader.js';
 import { resolveIdentity } from '../merge.js';
 import { collectSkillMetadata } from '../skills.js';
+import {
+  collectKnowledgeMetadataStrict,
+  knowledgeDirName,
+  renderKnowledgeBreadcrumb,
+} from '../knowledge.js';
 
 // Emits CLAUDE.md: identity + SOUL + RULES + a skills index (metadata plus a
-// pointer to each SKILL.md, since Claude Code loads skills on demand) + the model
-// hint. Compliance and knowledge-index sections from the upstream spec are
-// dropped: noord uses neither.
+// pointer to each SKILL.md, since Claude Code loads skills on demand) + a
+// knowledge breadcrumb (claude-code is a hook-mode adapter: the OKF knowledge
+// index is injected fresh at session start via the SessionStart hook sync
+// registers in .claude/settings.json, see hooks.ts) + the model hint.
+// Compliance sections from the upstream spec stay dropped: noord uses none.
 export function exportToClaudeCode(dir: string): string {
   const agentDir = resolve(dir);
   const manifest = loadAgentManifest(agentDir);
@@ -35,6 +42,11 @@ export function exportToClaudeCode(dir: string): string {
       skillParts.push('');
     }
     parts.push(skillParts.join('\n'));
+  }
+
+  const knowledge = collectKnowledgeMetadataStrict(agentDir);
+  if (knowledge.length > 0) {
+    parts.push(renderKnowledgeBreadcrumb(knowledgeDirName(agentDir), '.claude/settings.json'));
   }
 
   if (manifest.model?.preferred) {

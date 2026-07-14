@@ -14,6 +14,9 @@ export interface AgentManifest {
         fallback?: string[];
     };
     agents?: Record<string, AgentEntry>;
+    knowledge?: {
+        dir?: string;
+    };
 }
 export interface SkillMetadata {
     name: string;
@@ -21,4 +24,14 @@ export interface SkillMetadata {
     license?: string;
     allowedTools?: string[];
     directory: string;
+}
+export interface KnowledgeMetadata {
+    type: string;
+    title: string;
+    description?: string;
+    tags?: string[];
+    timestamp?: string;
+    resource?: string;
+    relPath: string;
+    path: string;
 }
