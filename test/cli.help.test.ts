@@ -166,14 +166,17 @@ describe('help output and exit codes', () => {
 
 describe('failures surface as a message, not a stack trace', () => {
   // main() was called bare, so any throw printed a raw Node stack naming
-  // internal frames. `sync` outside an agent directory is the shortest path to
-  // a real throw (loader.ts cannot find agent.yaml).
+  // internal dist/ frames. `export` outside an agent directory is the shortest
+  // deterministic throw: it goes straight to the loader, unlike `sync`, which
+  // resolves adapters first and so depends on whether the machine running the
+  // test happens to have a global adapter default configured.
   test('a missing agent.yaml prints one line and no internal frames', () => {
     const empty = fixture({});
-    const r = run(['sync'], empty);
+    const r = run(['export', '--format', 'claude-code'], empty);
     assert.equal(r.code, 1);
     assert.match(r.stderr, /agent\.yaml not found/);
-    assert.ok(!/\n\s+at /.test(r.stderr), `expected no stack frames, got:\n${r.stderr}`);
+    assert.equal(r.stderr.trim().split('\n').length, 1, `expected exactly one line, got:\n${r.stderr}`);
+    assert.ok(!/\n\s+at /.test(r.stderr), 'no stack frames');
     assert.ok(!r.stderr.includes('node:internal'), 'internal frames must not reach the user');
   });
 });
