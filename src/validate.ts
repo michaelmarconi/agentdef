@@ -1,4 +1,5 @@
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+import { AGENTDEF_DIR } from './paths.js';
 import { loadAgentManifest } from './loader.js';
 import { resolveIdentity } from './merge.js';
 import { loadAllSkills } from './skills.js';
@@ -7,6 +8,10 @@ import { collectKnowledgeMetadata, renderKnowledgeIndex } from './knowledge.js';
 export interface ValidationIssue {
   level: 'error' | 'warning';
   message: string;
+  // Printed once per distinct value after the issue list, not per issue: nine
+  // broken knowledge docs are nine lines but one remedy, and repeating the
+  // remedy nine times is how a fixable failure starts reading as noise.
+  hint?: string;
 }
 
 // Model identifiers must be "provider:model" (e.g. anthropic:claude-opus-4-7).
@@ -72,7 +77,23 @@ export function validate(dir: string): ValidationIssue[] {
   // marker, so this is where fail-loud lives.
   const knowledge = collectKnowledgeMetadata(agentDir);
   for (const error of knowledge.errors) {
-    issues.push({ level: 'error', message: `knowledge: ${error}` });
+    issues.push({
+      level: 'error',
+      message: `knowledge: ${error}`,
+      // Every one of these is the same two-line edit, and without the remedy the
+      // reader has to know the OKF spec to act. Docs under .agentdef/parent are
+      // inherited, so they are fixed in the parent repo, not repaired here.
+      hint: error.startsWith(`${AGENTDEF_DIR}${sep}`)
+        ? `inherited knowledge docs live in the parent repo; fix them there, then re-run 'agentdef sync'`
+        : [
+            'add OKF frontmatter at the top of each file listed above:',
+            '  ---',
+            '  type: brand          # free-form; only this field is required',
+            '  title: Competitors   # optional, defaults to the filename',
+            '  ---',
+            "run 'agentdef knowledge lint --fix' to write these automatically",
+          ].join('\n       '),
+    });
   }
   if (knowledge.entries.length > 0) {
     const size = renderKnowledgeIndex(knowledge.entries, { agentDir }).length;

@@ -14,7 +14,7 @@ import { FORMAT_SOURCES } from './watch-sources.js';
 import { sync, resolveAdapters, writeAdapters, machineAdaptersPath, KNOWN_ADAPTERS, knownAdapters } from './sync.js';
 import { runKnowledgeHook } from './knowledge-hook.js';
 import { removeSessionHook, KNOWLEDGE_HOOK } from './hooks.js';
-import { collectKnowledgeMetadata, knowledgeHookEnabled } from './knowledge.js';
+import { collectKnowledgeMetadata, knowledgeHookEnabled, lintKnowledge } from './knowledge.js';
 import { init } from './init.js';
 import { resolve } from 'node:path';
 // Status/logs go to stderr; only generated content goes to stdout. This is the
@@ -74,8 +74,13 @@ const COMMANDS = {
         ],
     },
     knowledge: {
-        usage: 'agentdef knowledge <hook|unhook> <claude|gemini> [--dir .]',
-        summary: 'manage the SessionStart hook that injects the knowledge index',
+        usage: 'agentdef knowledge <hook|unhook|lint> [<claude|gemini>] [--fix] [--dir .]',
+        summary: 'lint the knowledge docs, or manage the SessionStart hook that injects the index',
+        detail: [
+            'lint         report local knowledge docs that are missing OKF frontmatter',
+            '--fix        write the inferred frontmatter instead of only reporting it',
+            'hook|unhook  register or remove the SessionStart hook for claude or gemini',
+        ],
     },
 };
 function renderHelp(topic) {
@@ -206,6 +211,10 @@ async function main() {
             for (const issue of issues) {
                 console.error(`${issue.level === 'error' ? 'ERROR' : 'warn '}: ${issue.message}`);
             }
+            // Deduped: one remedy per distinct hint, after the list it applies to.
+            for (const hint of new Set(issues.map((i) => i.hint).filter(Boolean))) {
+                console.error(`hint : ${hint}`);
+            }
             const errors = issues.filter((i) => i.level === 'error').length;
             if (errors > 0) {
                 console.error(`validation failed: ${errors} error(s)`);
@@ -303,7 +312,36 @@ async function main() {
         // by design, so it must keep working forever. Never rename it.
         case 'knowledge': {
             const sub = process.argv[3] && !process.argv[3].startsWith('-') ? process.argv[3] : undefined;
-            const usage = 'usage: agentdef knowledge <hook|unhook> <claude|gemini> [--dir .]';
+            const usage = 'usage: agentdef knowledge <hook|unhook|lint> [<claude|gemini>] [--fix] [--dir .]';
+            if (sub === 'lint') {
+                const fix = has('--fix');
+                const { findings, fixed } = lintKnowledge(dir, { fix });
+                const missing = findings.filter((f) => f.reason === 'missing-frontmatter');
+                const malformed = findings.filter((f) => f.reason === 'malformed-frontmatter');
+                for (const f of missing) {
+                    const p = `${f.proposed?.type}, title: ${f.proposed?.title}`;
+                    console.error(fix ? `fixed  : ${f.relPath} (type: ${p})` : `missing: ${f.relPath} -> would add type: ${p}`);
+                }
+                for (const f of malformed)
+                    console.error(`broken : ${f.detail}`);
+                if (findings.length === 0) {
+                    console.error('all knowledge docs carry OKF frontmatter');
+                    break;
+                }
+                if (fixed.length) {
+                    console.error(`\n${fixed.length} document(s) updated. The type and title above are inferred from the`);
+                    console.error('folder name and the first heading, so review them before committing.');
+                }
+                // Malformed frontmatter is never auto-repaired, so it must keep the exit
+                // non-zero even after --fix, or CI would go green on a still-broken repo.
+                if (malformed.length) {
+                    console.error(`\n${malformed.length} document(s) have frontmatter but no usable 'type'. Fix those by hand.`);
+                    process.exit(1);
+                }
+                if (!fix)
+                    process.exit(1);
+                break;
+            }
             if (sub !== 'hook' && sub !== 'unhook') {
                 console.error(usage);
                 process.exit(1);

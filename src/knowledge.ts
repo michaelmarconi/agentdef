@@ -1,5 +1,5 @@
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, relative, resolve, basename } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { join, relative, resolve, basename, dirname } from 'node:path';
 import yaml from 'js-yaml';
 import type { KnowledgeMetadata } from './types.js';
 import { collectSourceRoots } from './sources.js';
@@ -18,6 +18,21 @@ export const DEFAULT_KNOWLEDGE_DIR = 'knowledge';
 // OKF reserved filenames: directory listings and update logs, valid at any
 // directory level. Never concept documents, so discovery skips them.
 const RESERVED_FILES = new Set(['index.md', 'log.md']);
+
+// The one shape a knowledge doc must have. Shared so discovery and validation
+// agree on what counts as frontmatter — a README skipped here but parsed there
+// would reintroduce exactly the false positive this is meant to remove.
+const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---/;
+
+// README.md is a folder explainer by repo convention, not an OKF concept doc, so
+// a plain one is skipped rather than reported as broken. Unlike index.md/log.md
+// the skip is conditional: a README that deliberately carries OKF frontmatter
+// stays indexed (noord-template-repo has one), so nothing that was being indexed
+// silently disappears.
+function isUnannotatedReadme(filePath: string): boolean {
+  if (basename(filePath) !== 'README.md') return false;
+  return !FRONTMATTER_RE.test(readFileSync(filePath, 'utf-8'));
+}
 
 // The knowledge folder name for one chain level, from that level's agent.yaml
 // (`knowledge: { dir: ... }`), defaulting to knowledge/. A resolver rather than
@@ -40,16 +55,25 @@ export function knowledgeHookEnabled(agentDir: string): boolean {
 }
 
 // OKF frontmatter only; bodies stay untouched so bundles remain OKF-portable.
-export function loadKnowledgeMetadata(filePath: string, rootDir: string): KnowledgeMetadata {
+// `displayRoot` only affects error text: errors are read by a human fixing the
+// file, usually from a CI log, where the absolute runner path (/home/runner/
+// work/...) names a location that exists on no developer machine. Defaulting it
+// to rootDir keeps the two-argument callers unchanged.
+export function loadKnowledgeMetadata(
+  filePath: string,
+  rootDir: string,
+  displayRoot: string = rootDir,
+): KnowledgeMetadata {
   const content = readFileSync(filePath, 'utf-8');
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  const match = content.match(FRONTMATTER_RE);
+  const shown = relative(displayRoot, filePath);
   if (!match) {
-    throw new Error(`knowledge doc at ${filePath} is missing YAML frontmatter (---)`);
+    throw new Error(`${shown} is missing YAML frontmatter (---)`);
   }
   const fm = yaml.load(match[1]) as Record<string, unknown> | null;
   const type = fm?.type == null ? '' : String(fm.type).trim();
   if (type === '') {
-    throw new Error(`knowledge doc at ${filePath} is missing the required OKF field: type`);
+    throw new Error(`${shown} is missing the required OKF field: type`);
   }
   const timestamp = fm?.timestamp;
   return {
@@ -99,12 +123,17 @@ export function collectKnowledgeMetadata(agentDir: string): KnowledgeCollection 
   const seen = new Set<string>();
   const entries: KnowledgeMetadata[] = [];
   const errors: string[] = [];
-  for (const root of collectSourceRoots(resolve(agentDir), knowledgeDirName)) {
+  const base = resolve(agentDir);
+  for (const root of collectSourceRoots(base, knowledgeDirName)) {
     const files: string[] = [];
     listKnowledgeFiles(root, files);
     for (const file of files) {
+      if (isUnannotatedReadme(file)) continue;
       try {
-        const doc = loadKnowledgeMetadata(file, root);
+        // Errors are shown relative to the agent dir, not the knowledge root, so
+        // they read as the path the human has to open (knowledge/brand/x.md),
+        // and an inherited doc is visibly inherited (.agentdef/parent/...).
+        const doc = loadKnowledgeMetadata(file, root, base);
         if (seen.has(doc.relPath)) continue;
         seen.add(doc.relPath);
         entries.push(doc);
@@ -127,6 +156,97 @@ export function collectKnowledgeMetadataStrict(agentDir: string): KnowledgeMetad
     throw new Error(errors.join('\n'));
   }
   return entries;
+}
+
+// What `agentdef knowledge lint` found about one document. `proposed` is set
+// only for the auto-fixable case; a file that HAS frontmatter but a broken or
+// missing `type` is reported and left alone, because guessing at a half-written
+// annotation would overwrite an intent we cannot read.
+export interface KnowledgeLintFinding {
+  relPath: string; // relative to the agent dir, i.e. what the human opens
+  path: string;
+  reason: 'missing-frontmatter' | 'malformed-frontmatter';
+  detail?: string;
+  proposed?: { type: string; title: string };
+}
+
+export interface KnowledgeLintResult {
+  findings: KnowledgeLintFinding[];
+  fixed: string[]; // relPaths actually written
+}
+
+// Quote anything that would not survive a YAML round trip as a bare scalar (a
+// colon, a leading dash, a hash). A double-quoted JSON string is valid YAML.
+function yamlScalar(value: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9 ._/-]*$/.test(value) ? value : JSON.stringify(value);
+}
+
+// The folder a doc sits in is the one type signal that is already there and
+// already curated: knowledge/brand/x.md is brand knowledge. Files directly in
+// the knowledge root have no such signal, so they get a neutral placeholder the
+// human is told to review rather than an invented-looking category.
+function inferType(filePath: string, root: string): string {
+  const dir = dirname(relative(root, filePath));
+  return dir === '.' ? 'note' : basename(dir);
+}
+
+function inferTitle(content: string, filePath: string): string {
+  const h1 = content.match(/^#\s+(.+)$/m);
+  return h1 ? h1[1].trim() : basename(filePath, '.md');
+}
+
+// Reports (and optionally repairs) knowledge docs that would fail validate().
+// Deliberately LOCAL-only: the extends chain is a regenerable cache under
+// .agentdef/, so writing there would be undone by the next sync and would edit
+// a repo the user does not own. Inherited breakage is the parent repo's to fix.
+//
+// This does not soften validate(): it stays fail-loud, and repair is a separate
+// command a human runs and reviews, the same shape as `ruff --fix`.
+export function lintKnowledge(
+  agentDir: string,
+  opts: { fix?: boolean } = {},
+): KnowledgeLintResult {
+  const base = resolve(agentDir);
+  const root = join(base, knowledgeDirName(base));
+  const findings: KnowledgeLintFinding[] = [];
+  const fixed: string[] = [];
+  if (!existsSync(root)) return { findings, fixed };
+
+  const files: string[] = [];
+  listKnowledgeFiles(root, files);
+  files.sort();
+
+  for (const file of files) {
+    if (isUnannotatedReadme(file)) continue;
+    const content = readFileSync(file, 'utf-8');
+    const relPath = relative(base, file);
+
+    if (FRONTMATTER_RE.test(content)) {
+      // Frontmatter is present, so the only remaining failure is the `type`
+      // rule. Anything loadKnowledgeMetadata rejects here needs a human.
+      try {
+        loadKnowledgeMetadata(file, root, base);
+      } catch (e) {
+        findings.push({
+          relPath,
+          path: file,
+          reason: 'malformed-frontmatter',
+          detail: (e as Error).message,
+        });
+      }
+      continue;
+    }
+
+    const proposed = { type: inferType(file, root), title: inferTitle(content, file) };
+    findings.push({ relPath, path: file, reason: 'missing-frontmatter', proposed });
+    if (opts.fix) {
+      const block = `---\ntype: ${yamlScalar(proposed.type)}\ntitle: ${yamlScalar(proposed.title)}\n---\n\n`;
+      writeFileSync(file, block + content);
+      fixed.push(relPath);
+    }
+  }
+
+  return { findings, fixed };
 }
 
 // The ONE index renderer, shared by the static instruction-file sections and
