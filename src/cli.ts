@@ -26,6 +26,95 @@ function getOpt(long: string, short?: string): string | undefined {
 }
 const has = (flag: string) => process.argv.includes(flag);
 
+// Per-command usage, kept next to the dispatch it documents. `detail` carries
+// only the flags specific to that command; --dir is shared by all of them and
+// is stated once in the footer instead of repeated eight times.
+interface CommandHelp {
+  usage: string;
+  summary: string;
+  detail?: string[];
+}
+
+const COMMANDS: Record<string, CommandHelp> = {
+  init: {
+    usage: 'agentdef init [--no-sync] [--dir .]',
+    summary: 'install the git hooks and run the first sync (the whole one-time setup)',
+    detail: ['--no-sync    install the hooks only, skip the initial sync'],
+  },
+  sync: {
+    usage: 'agentdef sync [--adapters a,b,c] [--force] [--dir .]',
+    summary: 'regenerate the instruction files for every configured tool',
+    detail: [
+      '--adapters   comma-separated tools for this run, overriding .agent-adapters',
+      '--force      regenerate even when no source changed',
+    ],
+  },
+  adapters: {
+    usage: 'agentdef adapters [list | show | set [--local] <tool>...] [--dir .]',
+    summary: 'inspect or choose which tools sync generates for',
+    detail: [
+      'list         every adapter agentdef knows, and what each one writes',
+      'show         the adapters in effect here and where they come from (default)',
+      'set          write the adapter list; --local writes it into this repo',
+    ],
+  },
+  export: {
+    usage: 'agentdef export --format <format> [--out FILE] [--dir .]',
+    summary: "print one tool's instruction file to stdout",
+    detail: [
+      '--format     claude-code, agents, gemini, cursor, or an AGENTS.md alias:',
+      '             codex, copilot, kiro, opencode, windsurf, zed, aider, kimi, grok, antigravity',
+      '--out        write to FILE instead of stdout',
+    ],
+  },
+  install: {
+    usage: 'agentdef install [--force] [--dir .]',
+    summary: 'materialize the extends chain into .agentdef/parent',
+    detail: ['--force      re-clone every ancestor even when the cache is current'],
+  },
+  validate: {
+    usage: 'agentdef validate [--dir .]',
+    summary: 'check agent.yaml, skills and knowledge docs; exits 1 on any error',
+  },
+  watch: {
+    usage: 'agentdef watch [--baseline FILE] [--update] [--dir .]',
+    summary: "fingerprint each tool's published format and report drift",
+    detail: [
+      '--baseline   baseline file (default: watch-baselines.json in --dir)',
+      '--update     record the current fingerprints instead of failing on drift',
+    ],
+  },
+  knowledge: {
+    usage: 'agentdef knowledge <hook|unhook> <claude|gemini> [--dir .]',
+    summary: 'manage the SessionStart hook that injects the knowledge index',
+  },
+};
+
+function renderHelp(topic?: string): string {
+  const cmd = topic ? COMMANDS[topic] : undefined;
+  if (cmd) {
+    return [
+      cmd.summary,
+      '',
+      `usage: ${cmd.usage}`,
+      '',
+      ...(cmd.detail ?? []).map((d) => `  ${d}`),
+      '  --dir, -d    the agent directory (default: the current one)',
+    ].join('\n');
+  }
+  const width = Math.max(...Object.keys(COMMANDS).map((n) => n.length));
+  return [
+    'agentdef: define an agent once, generate the config file every tool expects.',
+    '',
+    'usage: agentdef <command> [options]',
+    '',
+    ...Object.entries(COMMANDS).map(([name, c]) => `  ${name.padEnd(width)}  ${c.summary}`),
+    '',
+    "run 'agentdef help <command>' or 'agentdef <command> --help' for one command's options.",
+    'every command takes --dir, -d to point at an agent directory other than the current one.',
+  ].join('\n');
+}
+
 // Nudge users to update the globally installed CLI. update-notifier only prints
 // on a TTY and to stderr, so it never shows in git hooks / pipes / CI and never
 // pollutes `export > file` stdout. Best-effort: an update check must never break
@@ -42,6 +131,33 @@ function checkForUpdate(): void {
 
 async function main(): Promise<void> {
   const command = process.argv[2];
+  const args = process.argv.slice(2);
+
+  // Answered before dispatch, and before the update check, because every command
+  // here runs for its side effects: init installs git hooks, rewrites .gitignore
+  // and deletes the legacy cache; sync writes the generated files; install clones
+  // the parent over the network. A check inside each case would leave the next
+  // command added one forgotten line away from executing on `--help` again.
+  if (command === 'help' || args.some((a) => a === '--help' || a === '-h')) {
+    // Same positional rule the adapters/knowledge subcommands use: the topic is
+    // the next bare word, so `agentdef help --dir x` is not read as a topic of
+    // "x" and `agentdef --help` is not read as a topic of "--help".
+    const positional = (i: number) =>
+      process.argv[i] && !process.argv[i].startsWith('-') ? process.argv[i] : undefined;
+    const topic = command === 'help' ? positional(3) : positional(2);
+    if (topic && !COMMANDS[topic]) {
+      console.error(`unknown command: ${topic}\n`);
+      console.error(renderHelp());
+      process.exit(1);
+    }
+    // An explicit help request is not an error, so it exits 0 and goes to stdout
+    // (`agentdef --help | less` has to work). This is the one carve-out from the
+    // stdout rule above: help never runs alongside an export, so it cannot leak
+    // into a generated file the way the upstream log lines did.
+    process.stdout.write(`${renderHelp(topic)}\n`);
+    return;
+  }
+
   // `knowledge hook` runs at every session start of the hook-mode tools: skip
   // the update check there — no spawned background process, zero latency, and
   // zero risk of anything but the payload reaching the tool.
@@ -253,9 +369,17 @@ async function main(): Promise<void> {
     }
 
     default:
-      console.error('usage: agentdef <init|sync|adapters|export|install|validate|watch|knowledge> [--format <claude-code|agents|gemini|cursor>] [--adapters a,b,c] [--dir .] [--out FILE] [--force] [--update]');
+      console.error(`unknown command: ${command ?? '(none)'}\n`);
+      console.error(renderHelp());
       process.exit(1);
   }
 }
 
-main();
+// No user-facing path may end in a raw stack trace with internal dist/ frames.
+// Every throw in agentdef carries a complete, self-explanatory message (a bad
+// agent.yaml, an extends cycle, an unreadable parent), so one line is the whole
+// diagnosis; the stack only ever named files the user cannot act on.
+main().catch((e: unknown) => {
+  console.error(e instanceof Error ? e.message : String(e));
+  process.exit(1);
+});
