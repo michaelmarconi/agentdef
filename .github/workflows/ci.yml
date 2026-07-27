@@ -1,0 +1,33 @@
+name: ci
+
+# There was no PR-triggered workflow at all: format-watch.yml runs on a schedule
+# and never diffs dist/, so nothing checked a pull request. PR #1 arrived with a
+# hand-edited dist/ (compiled 0.6.1 output) and a test file that fails against
+# main's install() signature, and both would have merged green.
+#
+# dist/ is committed on purpose and is the only thing published ("files": ["dist"],
+# no build-on-install), so a dist/ that disagrees with tsc output is a shipped bug.
+# `git diff --exit-code dist` is the check that catches it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run build
+      - name: dist/ must match the build output
+        run: |
+          if ! git diff --exit-code --stat dist; then
+            echo "::error::dist/ is out of sync with src/. Run 'npm run build' and commit the result."
+            exit 1
+          fi
+      - run: npm test
