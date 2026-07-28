@@ -189,6 +189,25 @@ describe('include: present', () => {
   });
 
   // A local path is a filesystem copy, not a fetch, so there is nothing to filter.
+  // knowledge.dir lands in the same argv as the include: entries, from the same
+  // unchecked manifest, and had none of the same protection.
+  test('a hostile knowledge.dir is rejected instead of reaching git argv', () => {
+    const child = makeChild(
+      makeParent('name: p\ndescription: p\nknowledge:\n  dir: ../../escape\ninclude: []\n'),
+    );
+    assert.throws(() => install(child, { mode: 'force' }), /knowledge\.dir.*"\.\." segment/s);
+  });
+
+  // The selection is the step that can empty the cache. Cone mode is what
+  // guarantees the root files survive it, so that is asserted rather than assumed.
+  test('cone mode is verified after the selection, not assumed', () => {
+    const child = makeChild(makeParent('name: p\ndescription: p\ninclude:\n  - tools/runtime\n'));
+    install(child, { mode: 'force' });
+    const p = parentDirOf(child);
+    assert.equal(git(p, ['config', 'core.sparseCheckoutCone']).trim(), 'true');
+    assert.ok(existsSync(join(p, 'agent.yaml')));
+  });
+
   test('a local (non-URL) parent ignores include: and is copied whole', () => {
     const parent = mkdtempSync(join(tmpdir(), 'agentdef-local-'));
     dirs.push(parent);
@@ -275,6 +294,10 @@ describe('include: validation', () => {
     ['a traversal', ['../../etc'], /must not start with|".." segment/],
     ['a nested traversal', ['skills/../../etc'], /".." segment/],
     ['an embedded newline', ['tools\n!/agent.yaml'], /control characters/],
+    // "." selects the repo root, which cone mode reads as "root files only":
+    // silently the opposite of the whole tree the author meant.
+    ['a bare dot', ['.'], /"\." segment/],
+    ['a dot-slash prefix', ['./tools'], /"\." segment/],
   ];
   for (const [label, value, re] of bad) {
     test(`rejects ${label}`, () => {
@@ -298,6 +321,41 @@ describe('include: validation', () => {
     dirs.push(root);
     write(root, { 'agent.yaml': 'name: p\ndescription: p\ninclude:\n  - "docs/*"\n', 'SOUL.md': '# s\n' });
     assert.match(validate(root).find((i) => i.level === 'error')?.message ?? '', /wildcard/);
+  });
+
+  // A file passes existsSync but cone mode exits 128 on it, on the CONSUMER.
+  // The author's own CI stayed green while every downstream sync broke.
+  test('validate() errors on an include: entry that is a file, not a directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentdef-v-'));
+    dirs.push(root);
+    write(root, {
+      'agent.yaml': 'name: p\ndescription: p\ninclude:\n  - docs/adr.md\n',
+      'SOUL.md': '# s\n',
+      'docs/adr.md': '# a\n',
+    });
+    assert.match(
+      validate(root).find((i) => i.level === 'error')?.message ?? '',
+      /is not a directory/,
+    );
+  });
+
+  // Cone mode selects a directory by selecting its ancestors too, and an
+  // ancestor's loose files ride along. A repo that adopted include: to keep
+  // internal files out of consumers would otherwise ship them anyway.
+  test('validate() warns that a nested path drags its parent’s loose files along', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentdef-v-'));
+    dirs.push(root);
+    write(root, {
+      'agent.yaml': 'name: p\ndescription: p\ninclude:\n  - tools/runtime\n',
+      'SOUL.md': '# s\n',
+      'tools/runtime/cli.js': 'x\n',
+      'tools/credentials.txt': 'SECRET\n',
+    });
+    const warn = validate(root).filter((i) => i.level === 'warning');
+    assert.ok(
+      warn.some((i) => /also ships the 1 file\(s\) directly in "tools\/"/.test(i.message)),
+      `expected an ancestor warning, got: ${warn.map((i) => i.message).join(' | ')}`,
+    );
   });
 
   test('validate() warns when a declared path does not exist', () => {

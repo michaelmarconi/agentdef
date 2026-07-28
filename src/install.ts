@@ -21,23 +21,37 @@ function isGitSource(source: string): boolean {
 // doc.ts reads memory/MEMORY.md from the local repo only, never from a parent.
 const ESSENTIAL_PATHS = ['skills', 'agents'];
 
-function essentialPathsFor(targetDir: string): string[] {
-  return [...new Set([...ESSENTIAL_PATHS, knowledgeDirName(targetDir)])];
+function essentialPathsFor(targetDir: string, where: string): string[] {
+  // knowledge.dir is unchecked YAML from the same untrusted manifest and lands in
+  // the same argv as the include: entries, so it goes through the same gate.
+  const knowledge = checkPathEntry(knowledgeDirName(targetDir), `${where}: knowledge.dir`);
+  return [...new Set([...ESSENTIAL_PATHS, knowledge])];
 }
 
-// `git clone --sparse` exists from 2.25 but was broken for URLs until 2.26 (it
-// chdir'd into the URL instead of the clone dir), and cloneGitRepo is only ever
-// reached for URLs. Rather than raise agentdef's floor to 2.26 for everyone, an
-// older git falls back to the plain clone it has always done: the parent's whole
-// tree, exactly as before. Only `include:` stops working there, and it says so.
-let sparseSupport: boolean | undefined;
-function gitSupportsSparseClone(): boolean {
+// The floor is 2.37, not 2.26. `git clone --sparse` works from 2.26, but this
+// code depends on the whole selection running in CONE mode, and `sparse-checkout
+// set` only defaults to cone from 2.37. In non-cone mode the same arguments are
+// read as gitignore-style patterns, which do NOT imply the root files, so the
+// selection would delete agent.yaml, SOUL.md and RULES.md out of the parent
+// cache. Everything below 2.37 therefore takes the plain full clone agentdef has
+// always done, which is the already-exercised path, rather than a mode this code
+// would silently misread. (2.37 is mid-2022, so this costs essentially nobody.)
+//
+// The version string is cached alongside the verdict: the fallback warning needs
+// it, and re-running `git --version` there would throw on exactly the machines
+// where the probe already failed, turning a graceful degradation into an error.
+let sparseSupport: { ok: boolean; version: string } | undefined;
+function gitSparseSupport(): { ok: boolean; version: string } {
   if (sparseSupport !== undefined) return sparseSupport;
   try {
-    const m = gitOut(['--version']).match(/(\d+)\.(\d+)/);
-    sparseSupport = m ? Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 26) : false;
+    const raw = gitOut(['--version']);
+    const m = raw.match(/(\d+)\.(\d+)/);
+    sparseSupport = {
+      ok: m ? Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 37) : false,
+      version: m ? `${m[1]}.${m[2]}` : 'of unknown version',
+    };
   } catch {
-    sparseSupport = false;
+    sparseSupport = { ok: false, version: 'of unknown version' };
   }
   return sparseSupport;
 }
@@ -48,7 +62,7 @@ function gitSupportsSparseClone(): boolean {
 // pulls exactly the root files, so agent.yaml is on disk when this returns and
 // the include list can be read before any subdirectory is fetched.
 function cloneGitRepo(source: string, targetDir: string, version?: string): boolean {
-  const sparse = gitSupportsSparseClone();
+  const sparse = gitSparseSupport().ok;
   const args = ['clone', '--depth', '1'];
   if (sparse) args.push('--filter=blob:none', '--sparse');
   if (version) args.push('--branch', version.replace('^', ''));
@@ -74,32 +88,42 @@ function cloneGitRepo(source: string, targetDir: string, version?: string): bool
 // It matters more than a normal input check because the mistake is invisible to
 // the person who can fix it: a parent never applies its own `include:`, so a bad
 // entry only ever fails on the consumers, in an unattended git hook.
+// Shared by `include:` entries and by knowledge.dir, which reaches the same argv
+// through essentialPathsFor and is just as much unchecked YAML from a repo the
+// consumer does not own.
+export function checkPathEntry(entry: unknown, at: string): string {
+  if (typeof entry !== 'string') {
+    throw new Error(`${at} must be a string, got ${entry === null ? 'null' : typeof entry}`);
+  }
+  const path = entry.trim();
+  const segments = path.split('/');
+  const reason =
+    path === ''
+      ? 'is empty'
+      : /^[-/!~]/.test(path)
+        ? 'must not start with "-", "/", "!" or "~"'
+        : /[*?[\]\\]/.test(path)
+          ? 'must be a directory, not a wildcard pattern'
+          : /[\u0000-\u001f]/.test(path)
+            ? 'must not contain control characters or newlines'
+            : segments.includes('..')
+              ? 'must not contain a ".." segment'
+              : // "." selects the repository root, which cone mode then reads as
+                // "root files only": silently the OPPOSITE of the whole tree the
+                // author meant. "./tools" is the same trap spelled longer.
+                segments.includes('.')
+                ? 'must not contain a "." segment (drop include: entirely to ship everything)'
+                : '';
+  if (reason) throw new Error(`${at} ${JSON.stringify(entry)} ${reason}`);
+  return path;
+}
+
 export function parseIncludeList(value: unknown, where: string): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) {
     throw new Error(`${where}: "include" must be a list of paths, got ${typeof value}`);
   }
-  return value.map((entry, i) => {
-    const at = `${where}: include[${i}]`;
-    if (typeof entry !== 'string') {
-      throw new Error(`${at} must be a string, got ${entry === null ? 'null' : typeof entry}`);
-    }
-    const path = entry.trim();
-    const reason =
-      path === ''
-        ? 'is empty'
-        : /^[-/!~]/.test(path)
-          ? 'must not start with "-", "/", "!" or "~"'
-          : /[*?[\]\\]/.test(path)
-            ? 'must be a directory, not a wildcard pattern'
-            : /[\u0000-\u001f]/.test(path)
-              ? 'must not contain control characters or newlines'
-              : path.split('/').includes('..')
-                ? 'must not contain a ".." segment'
-                : '';
-    if (reason) throw new Error(`${at} ${JSON.stringify(entry)} ${reason}`);
-    return path;
-  });
+  return value.map((entry, i) => checkPathEntry(entry, `${where}: include[${i}]`));
 }
 
 // Applies the parent's own `include:` to the still-sparse clone:
@@ -111,13 +135,43 @@ export function parseIncludeList(value: unknown, where: string): string[] | unde
 // SOUL.md and RULES.md arrive regardless and `include:` only ever names
 // subdirectories. A listed path that does not exist is a silent no-op in cone
 // mode, which validate() warns about in the repo that declared it.
-function applySparseSelection(targetDir: string, source: string): void {
+function applySparseSelection(targetDir: string, source: string, warnings: string[]): void {
+  const where = `extends: ${source}: agent.yaml`;
   const manifest = loadAgentManifest(targetDir) as { include?: unknown };
-  const include = parseIncludeList(manifest.include, `extends: ${source}: agent.yaml`);
+  const include = parseIncludeList(manifest.include, where);
   const args = include
-    ? ['sparse-checkout', 'set', '--', ...essentialPathsFor(targetDir), ...include]
+    ? ['sparse-checkout', 'set', '--', ...essentialPathsFor(targetDir, where), ...include]
     : ['sparse-checkout', 'disable'];
   execFileSync('git', ['-C', targetDir, ...args], { stdio: 'pipe', timeout: 60_000 });
+  if (!include) return;
+
+  // The selection is the step that can empty this cache, so verify rather than
+  // assume. Cone mode is what guarantees the root files; if it were ever off,
+  // these same arguments would be read as gitignore patterns and take agent.yaml
+  // with them. Checked here, before the swap, so a surprise costs nothing.
+  if (gitOut(['-C', targetDir, 'config', 'core.sparseCheckoutCone']) !== 'true') {
+    throw new Error(`extends: ${source}: sparse-checkout left cone mode; refusing to swap in a cache that may be missing its root files`);
+  }
+  if (!existsSync(join(targetDir, 'agent.yaml'))) {
+    throw new Error(`extends: ${source}: the include: selection removed agent.yaml from the checkout`);
+  }
+
+  // `--filter` is advisory: a remote with uploadpack.allowFilter off accepts the
+  // clone, prints a warning agentdef swallows via stdio:'pipe', and sends
+  // everything. The base repo asked for a trimmed fetch and did not get one, so
+  // say so rather than let it believe otherwise.
+  try {
+    const missing = gitOut(['-C', targetDir, 'rev-list', '--objects', '--all', '--missing=print'])
+      .split('\n')
+      .filter((l) => l.startsWith('?')).length;
+    if (missing === 0) {
+      warnings.push(
+        `warning: ${source} declares include:, but its remote does not support fetch filtering — the full repository was transferred (the working tree is still trimmed)`,
+      );
+    }
+  } catch {
+    // A diagnostic only; never fail an otherwise good clone over it.
+  }
 }
 
 function gitOut(args: string[], cwd?: string): string {
@@ -151,7 +205,7 @@ function cloneAndSwap(source: string, parentDir: string, warnings: string[]): vo
       throw new Error(`extends: parent at ${source} has no agent.yaml, not a valid agent definition`);
     }
     if (sparse) {
-      applySparseSelection(tmpDir, source);
+      applySparseSelection(tmpDir, source, warnings);
     } else if (parseIncludeList((loadAgentManifest(tmpDir) as { include?: unknown }).include, `extends: ${source}: agent.yaml`)) {
       // Too old a git to filter, but the parent asked to be trimmed. The clone
       // is complete and correct, so this is a warning and not a failure.

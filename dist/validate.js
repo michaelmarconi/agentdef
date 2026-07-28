@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, readdirSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 import { AGENTDEF_DIR } from './paths.js';
 import { loadAgentManifest } from './loader.js';
 import { parseIncludeList } from './install.js';
@@ -45,13 +45,42 @@ export function validate(dir) {
     try {
         const include = parseIncludeList(manifest.include, 'agent.yaml');
         for (const path of include ?? []) {
-            // Cone mode silently ignores a pattern that matches nothing, so a typo
-            // would otherwise just quietly ship less than intended.
-            if (!existsSync(join(agentDir, path))) {
+            const full = join(agentDir, path);
+            if (!existsSync(full)) {
+                // Cone mode silently ignores a pattern matching nothing, so a typo would
+                // otherwise just quietly ship less than intended.
                 issues.push({
                     level: 'warning',
                     message: `agent.yaml: include "${path}" does not exist here, so consumers will fetch nothing for it`,
                 });
+                continue;
+            }
+            // lstat, not stat: a symlink to a directory is not a directory to git
+            // either. Cone mode takes directories only and exits 128 on anything else,
+            // on the CONSUMER, so this must be an error here or the author ships a
+            // value that breaks every downstream repo while their own CI stays green.
+            if (!lstatSync(full).isDirectory()) {
+                issues.push({
+                    level: 'error',
+                    message: `agent.yaml: include "${path}" is not a directory; sparse-checkout takes directories only, so this would fail every consumer's sync`,
+                });
+                continue;
+            }
+            // Cone mode selects a directory by also selecting each of its ancestors,
+            // and an ancestor's own loose files come along with it. So `a/b` ships
+            // every file sitting directly in `a/` too. Surprising precisely for the
+            // repo that adopted include: to keep internal files out of consumers.
+            const parent = dirname(path);
+            if (parent !== '.') {
+                const loose = readdirSync(join(agentDir, parent), { withFileTypes: true })
+                    .filter((e) => e.isFile())
+                    .map((e) => e.name);
+                if (loose.length > 0) {
+                    issues.push({
+                        level: 'warning',
+                        message: `agent.yaml: include "${path}" also ships the ${loose.length} file(s) directly in "${parent}/" (${loose.slice(0, 3).join(', ')}${loose.length > 3 ? ', ...' : ''}) — cone mode cannot select a subdirectory without its parent`,
+                    });
+                }
             }
         }
     }

@@ -1,3 +1,4 @@
+export declare function checkPathEntry(entry: unknown, at: string): string;
 export declare function parseIncludeList(value: unknown, where: string): string[] | undefined;
 export type InstallMode = 'reuse' | 'refresh' | 'force';
 export interface InstallResult {

@@ -164,11 +164,13 @@ include:
 
 The base repo declares this rather than the consumer, because it is the side that knows the layout and when it changes. `skills/`, `agents/` and the knowledge dir are always fetched since agentdef reads them for every consumer, so `include:` can only add, never remove. Every file at the repository **root** always arrives too (`agent.yaml`, `SOUL.md`, `RULES.md`), which is why the list only ever names subdirectories.
 
+**One sharp edge.** Cone mode cannot select a subdirectory without also selecting its parents, and a selected parent brings the files sitting directly in it. So `include: [tools/runtime]` also ships everything loose in `tools/`, though not `tools/anything-else/`. If `tools/` holds something you do not want downstream, move it or list a path with no loose siblings. `agentdef validate` warns with the file count when it sees this.
+
 **What this is and is not.** It uses a git partial clone (`--filter=blob:none`) with sparse-checkout, so the *contents* of unlisted directories are genuinely never fetched: they do not land in any consumer's working tree, editor index, grep results or backups. It is not an access control. `--filter=blob:none` filters blobs and never trees, so the full list of file *paths* is still cloned and readable offline, and any consumer with read access to the base repo can pull the contents on demand with a single `git sparse-checkout disable`. Treat it as fetch and disk hygiene. Anything genuinely confidential belongs in a separate repo.
 
 Two further limits worth knowing. A consumer already sitting on a materialized cache does not lose anything when `include:` is added later, because the cache is kept until the parent's `HEAD` moves. And local (filesystem path) parents are plain copies with no fetch to filter, so `include:` does not apply to them.
 
-Partial clone needs git 2.26+ and a remote that supports fetch filtering (GitHub, GitLab and Bitbucket do). Older git falls back to the full clone agentdef has always done, and says so in a warning if the parent declared `include:`. `agentdef validate` checks the list in the repo that declares it, since a mistake there would otherwise only ever surface on the consumers.
+Partial clone needs git 2.37+ (where `sparse-checkout set` defaults to cone mode) and a remote that supports fetch filtering (GitHub, GitLab and Bitbucket do). Older git falls back to the full clone agentdef has always done, and says so in a warning if the parent declared `include:`. `agentdef validate` checks the list in the repo that declares it, since a mistake there would otherwise only ever surface on the consumers.
 
 ## Format-drift watcher
 
