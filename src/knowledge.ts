@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, relative, resolve, basename, dirname } from 'node:path';
+import { join, relative, resolve, basename, sep } from 'node:path';
 import yaml from 'js-yaml';
 import type { KnowledgeMetadata } from './types.js';
 import { collectSourceRoots } from './sources.js';
@@ -182,12 +182,16 @@ function yamlScalar(value: string): string {
 }
 
 // The folder a doc sits in is the one type signal that is already there and
-// already curated: knowledge/brand/x.md is brand knowledge. Files directly in
-// the knowledge root have no such signal, so they get a neutral placeholder the
-// human is told to review rather than an invented-looking category.
+// already curated: knowledge/brand/x.md is brand knowledge. Specifically the
+// TOP-level folder under the knowledge root, not the immediate parent — deeper
+// levels are per-project or per-batch, so knowledge/seo/internal-linking/
+// hansetherm-waermepumpe-2026-05/x.md is seo knowledge, and the immediate parent
+// would yield "hansetherm-waermepumpe-2026-05" as a type, which is a folder name
+// masquerading as a category. Files directly in the root have no such signal and
+// get a neutral placeholder the human is told to review.
 function inferType(filePath: string, root: string): string {
-  const dir = dirname(relative(root, filePath));
-  return dir === '.' ? 'note' : basename(dir);
+  const segments = relative(root, filePath).split(sep);
+  return segments.length > 1 ? segments[0] : 'note';
 }
 
 function inferTitle(content: string, filePath: string): string {

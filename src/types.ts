@@ -19,6 +19,11 @@ export interface AgentManifest {
     fallback?: string[];
   };
   agents?: Record<string, AgentEntry>;
+  // Opt-in list of extra top-level directories a consumer's clone of THIS repo
+  // should fetch, on top of what agentdef always reads (skills/, agents/, the
+  // knowledge dir) and the root files cone mode always materialises. Absent means
+  // the full tree, as before. See install.ts -> applySparseSelection.
+  include?: string[];
   knowledge?: {
     dir?: string;
     hook?: boolean; // false: no SessionStart hooks, hook-mode tools get the static index

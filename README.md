@@ -144,6 +144,32 @@ extends: https://github.com/your-org/base-agent.git
 
 `agentdef install` clones each ancestor one level deeper under `.agentdef/parent` (a regenerable cache; `agentdef init` adds it to `.gitignore`, and migrates a repo off the old `.gitagent/` name by untracking and deleting it, so existing projects just re-run `agentdef init` and commit). On generation, nearer wins: `SOUL.md` is taken from the closest ancestor that defines one (local over parent over grandparent), `RULES.md` is the union (furthest ancestor first, local last), and skills merge with the nearest definition winning on name collision, so a local skill still overrides every inherited one.
 
+### Trimming what consumers fetch (`include`)
+
+By default a consumer clones the **whole** base repo into `.agentdef/parent`, not just the parts agentdef reads. That is usually fine, but a base repo that also keeps internal docs, exports or test fixtures next to its agent definition may not want all of it landing in every consuming project.
+
+A base repo opts into a leaner clone by listing the extra directories in its **own** `agent.yaml`:
+
+```yaml
+# the BASE repo's agent.yaml, not the consumer's
+name: my-base-agent
+description: ...
+include:
+  - tools/my-cli
+```
+
+- **No `include:` key** (the default): full clone, exactly as before. Nothing changes for any repo that does not opt in.
+- **`include: [<paths>]`**: consumers fetch the root files, `skills/`, `agents/`, the knowledge dir, and the listed paths.
+- **`include: []`**: the essentials only.
+
+The base repo declares this rather than the consumer, because it is the side that knows the layout and when it changes. `skills/`, `agents/` and the knowledge dir are always fetched since agentdef reads them for every consumer, so `include:` can only add, never remove. Every file at the repository **root** always arrives too (`agent.yaml`, `SOUL.md`, `RULES.md`), which is why the list only ever names subdirectories.
+
+**What this is and is not.** It uses a git partial clone (`--filter=blob:none`) with sparse-checkout, so the *contents* of unlisted directories are genuinely never fetched: they do not land in any consumer's working tree, editor index, grep results or backups. It is not an access control. `--filter=blob:none` filters blobs and never trees, so the full list of file *paths* is still cloned and readable offline, and any consumer with read access to the base repo can pull the contents on demand with a single `git sparse-checkout disable`. Treat it as fetch and disk hygiene. Anything genuinely confidential belongs in a separate repo.
+
+Two further limits worth knowing. A consumer already sitting on a materialized cache does not lose anything when `include:` is added later, because the cache is kept until the parent's `HEAD` moves. And local (filesystem path) parents are plain copies with no fetch to filter, so `include:` does not apply to them.
+
+Partial clone needs git 2.26+ and a remote that supports fetch filtering (GitHub, GitLab and Bitbucket do). Older git falls back to the full clone agentdef has always done, and says so in a warning if the parent declared `include:`. `agentdef validate` checks the list in the repo that declares it, since a mistake there would otherwise only ever surface on the consumers.
+
 ## Format-drift watcher
 
 Tools occasionally change their config format. `agentdef watch` fingerprints each tool's published format and compares it to a stored baseline. Deterministic, no LLM, no API key. It exits non-zero when something changes, so CI can open an issue and a human can update the affected adapter. See [`.github/workflows/format-watch.yml`](.github/workflows/format-watch.yml).

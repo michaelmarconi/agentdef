@@ -168,6 +168,24 @@ describe('knowledge lint', () => {
     assert.equal(readFileSync(join(root, '.agentdef/parent/knowledge/broken.md'), 'utf-8'), 'no frontmatter\n');
   });
 
+  // hstm-allgemein has knowledge/seo/internal-linking/<campaign>/<doc>.md. The
+  // immediate parent is a per-campaign folder, so using it would emit a type of
+  // "hansetherm-waermepumpe-2026-05": a folder name masquerading as a category.
+  test('type comes from the top-level folder, not the immediate parent', () => {
+    const root = fixture({
+      'agent.yaml': MANIFEST,
+      'knowledge/seo/internal-linking/hansetherm-waermepumpe-2026-05/targets.md': '# Targets\n',
+      'knowledge/brand/x.md': '# X\n',
+      'knowledge/team.md': '# Team\n',
+    });
+    const types = Object.fromEntries(
+      lintKnowledge(root).findings.map((f) => [f.relPath, f.proposed?.type]),
+    );
+    assert.equal(types[join('knowledge/seo/internal-linking/hansetherm-waermepumpe-2026-05/targets.md')], 'seo');
+    assert.equal(types[join('knowledge/brand/x.md')], 'brand');
+    assert.equal(types[join('knowledge/team.md')], 'note');
+  });
+
   test('honors a renamed knowledge.dir', () => {
     const root = fixture({
       'agent.yaml': `${MANIFEST}knowledge:\n  dir: wissen\n`,

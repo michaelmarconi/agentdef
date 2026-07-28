@@ -14,6 +14,7 @@ export interface AgentManifest {
         fallback?: string[];
     };
     agents?: Record<string, AgentEntry>;
+    include?: string[];
     knowledge?: {
         dir?: string;
         hook?: boolean;

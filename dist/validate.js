@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { AGENTDEF_DIR } from './paths.js';
 import { loadAgentManifest } from './loader.js';
+import { parseIncludeList } from './install.js';
 import { resolveIdentity } from './merge.js';
 import { loadAllSkills } from './skills.js';
 import { collectKnowledgeMetadata, renderKnowledgeIndex } from './knowledge.js';
@@ -35,6 +37,26 @@ export function validate(dir) {
     checkModel(manifest.model?.preferred, 'model.preferred');
     for (const fallback of manifest.model?.fallback ?? []) {
         checkModel(fallback, 'model.fallback');
+    }
+    // `include:` is applied on the CONSUMER, during their clone of this repo, so a
+    // bad entry never fails here on its own. Checking it at the source is the only
+    // place the person who can fix it will see it, before a push breaks every
+    // downstream repo in an unattended git hook.
+    try {
+        const include = parseIncludeList(manifest.include, 'agent.yaml');
+        for (const path of include ?? []) {
+            // Cone mode silently ignores a pattern that matches nothing, so a typo
+            // would otherwise just quietly ship less than intended.
+            if (!existsSync(join(agentDir, path))) {
+                issues.push({
+                    level: 'warning',
+                    message: `agent.yaml: include "${path}" does not exist here, so consumers will fetch nothing for it`,
+                });
+            }
+        }
+    }
+    catch (e) {
+        issues.push({ level: 'error', message: `agent.yaml: ${e.message}` });
     }
     // Chain-aware: a repo inheriting SOUL/RULES via extends is fine; only when the
     // whole chain resolves empty do adapters emit no identity (e.g. no Cursor
